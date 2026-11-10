@@ -1,0 +1,6 @@
+{
+  "name": "ParanoidX Node",
+  "description": "Privacy Node with Native Tor Routing, SimpleX Protocol (SMP & XFTP), Multi-Protocol VPN Suite (WireGuard, OpenVPN, Shadowsocks, V2Ray, Tailscale), and Anti-Forensics Vault.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
