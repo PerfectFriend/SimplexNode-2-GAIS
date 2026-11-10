@@ -12,6 +12,7 @@ import com.example.data.model.SharedFile
 import com.example.data.model.SimplexServer
 import com.example.data.model.VaultItem
 import com.example.data.security.CryptoUtils
+import com.example.data.security.DbEncryptionManager
 import com.example.data.security.Socks5ProxyClient
 import com.example.network.TorNetworkManager
 import com.example.network.smp.SmpProtocolEngine
@@ -41,8 +42,8 @@ import javax.crypto.SecretKey
 // [SECURITY-CRITICAL] Главный координатор криптографического контура и изоляции секретов.
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    // [REAL] Локальная база данных Room (заметки, логи, серверы, файлы).
-    // [NEEDS-WORK] База Room пока хранится в открытом виде SQLite (интеграция SQLCipher шифрования запланирована на Этап 1).
+    // [REAL] + [PROD-READY] Локальная база данных Room, полностью зашифрованная на диске через SQLCipher (Этап 1).
+    // [SECURITY-CRITICAL] Шифрование страниц БД через SupportFactory и 256-битный ключ DbEncryptionManager.
     private val db = AppDatabase.getDatabase(application)
     private val vaultDao = db.vaultDao()
     private val simplexDao = db.simplexDao()
@@ -314,7 +315,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setupMasterPassword(password: String, customMnemonic: String? = null) {
         viewModelScope.launch(Dispatchers.Default) {
-            val key = CryptoUtils.deriveKey(password)
+            val salt = CryptoUtils.generateSalt(32)
+            val saltB64 = Base64.encodeToString(salt, Base64.NO_WRAP)
+            val key = CryptoUtils.deriveKey(password, salt, CryptoUtils.DEFAULT_ITERATIONS)
             masterSecretKey = key
             
             val mnemonic = if (customMnemonic != null && com.example.data.security.Bip39Utils.validateMnemonic(customMnemonic)) {
@@ -324,9 +327,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             _bip39Mnemonic.value = mnemonic
             
-            // Generate seed from mnemonic to simulate HD wallet key derivation
+            // Generate seed from mnemonic using standard PBKDF2-HMAC-SHA512
             val seed = com.example.data.security.Bip39Utils.deriveSeed(mnemonic)
-            // Derive HD keys specifically
             val hdVaultKey = com.example.data.security.Bip39Utils.deriveVaultKey(seed)
             val hdOnionSeed = com.example.data.security.Bip39Utils.deriveTorOnionSeed(seed)
             val hdDhtHash = com.example.data.security.Bip39Utils.deriveTorrentDhtInfoHash(seed)
@@ -341,44 +343,109 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val encryptedMnemonic = CryptoUtils.encrypt(mnemonic, key)
             
             sp.edit()
+                .putString("kdf_salt", saltB64)
+                .putInt("kdf_iterations", CryptoUtils.DEFAULT_ITERATIONS)
+                .putString("kdf_algorithm", CryptoUtils.PBKDF2_ALGORITHM)
                 .putString("pass_hash", encryptedVerification)
                 .putString("encrypted_mnemonic", encryptedMnemonic)
                 .apply()
 
             cachedPassphraseHash = encryptedVerification
+            DbEncryptionManager.updateMasterPassphrase(getApplication<Application>(), password)
             _isPasswordSetup.value = true
             _isUnlocked.value = true
             resetInactivityTimer()
-            addSystemLog("VAULT", "Password setup and BIP-39 generation complete. HD keys derived.", "SUCCESS")
+            
+            CryptoUtils.zeroize(salt)
+            CryptoUtils.zeroize(seed)
+            addSystemLog("VAULT", "Password setup and BIP-39 generation complete. PBKDF2-HMAC-SHA512 KDF engaged.", "SUCCESS")
             addCloudSyncLog("CLOUD_ENGINE: Derived deterministic Tor onion address from BIP-39 seed: ${_simplexOnionAddress.value}")
         }
     }
 
     fun unlockVault(password: String): Boolean {
         return try {
-            val derived = CryptoUtils.deriveKey(password)
-            // Verify by decrypting verification hash
-            val decrypted = CryptoUtils.decrypt(cachedPassphraseHash, derived)
-            if (decrypted == "VERIFIED_KEY_DERIVATION") {
-                masterSecretKey = derived
+            val sp = getApplication<Application>().getSharedPreferences("simplex_security", Application.MODE_PRIVATE)
+            val saltB64 = sp.getString("kdf_salt", null)
+            val salt = if (saltB64 != null) Base64.decode(saltB64, Base64.NO_WRAP) else null
+            val iterations = sp.getInt("kdf_iterations", CryptoUtils.DEFAULT_ITERATIONS)
+
+            var derivedKey: SecretKey? = null
+            var isVerified = false
+
+            // 1. Try PBKDF2WithHmacSHA512 with saved random salt (Stage 1 standard)
+            if (salt != null) {
+                val key = CryptoUtils.deriveKey(password, salt, iterations)
+                try {
+                    val decrypted = CryptoUtils.decrypt(cachedPassphraseHash, key)
+                    if (decrypted == "VERIFIED_KEY_DERIVATION") {
+                        derivedKey = key
+                        isVerified = true
+                    }
+                } catch (ignored: Exception) {}
+            }
+
+            // 2. Legacy Migration Fallback: If verification failed, check legacy 1-round SHA-256 derivation
+            if (!isVerified) {
+                val legacyKey = CryptoUtils.deriveKeyLegacy(password)
+                try {
+                    val decryptedLegacy = CryptoUtils.decrypt(cachedPassphraseHash, legacyKey)
+                    if (decryptedLegacy == "VERIFIED_KEY_DERIVATION") {
+                        // Automatically migrate user credentials to fortified PBKDF2WithHmacSHA512
+                        val newSalt = CryptoUtils.generateSalt(32)
+                        val newKey = CryptoUtils.deriveKey(password, newSalt, CryptoUtils.DEFAULT_ITERATIONS)
+                        val newEncryptedVerification = CryptoUtils.encrypt("VERIFIED_KEY_DERIVATION", newKey)
+                        
+                        val oldEncryptedMnemonic = sp.getString("encrypted_mnemonic", null)
+                        val newEncryptedMnemonic = if (oldEncryptedMnemonic != null) {
+                            val decryptedMn = CryptoUtils.decrypt(oldEncryptedMnemonic, legacyKey)
+                            CryptoUtils.encrypt(decryptedMn, newKey)
+                        } else null
+
+                        sp.edit()
+                            .putString("kdf_salt", Base64.encodeToString(newSalt, Base64.NO_WRAP))
+                            .putInt("kdf_iterations", CryptoUtils.DEFAULT_ITERATIONS)
+                            .putString("kdf_algorithm", CryptoUtils.PBKDF2_ALGORITHM)
+                            .putString("pass_hash", newEncryptedVerification)
+                            .apply {
+                                if (newEncryptedMnemonic != null) putString("encrypted_mnemonic", newEncryptedMnemonic)
+                            }
+                            .apply()
+
+                        cachedPassphraseHash = newEncryptedVerification
+                        derivedKey = newKey
+                        isVerified = true
+                        CryptoUtils.zeroize(newSalt)
+                        addSystemLog("VAULT", "MIGRATION: Master key derivation upgraded from SHA-256 to PBKDF2-HMAC-SHA512 (150,000 rounds).", "SUCCESS")
+                    }
+                } catch (ignored: Exception) {}
+            }
+
+            if (isVerified && derivedKey != null) {
+                masterSecretKey = derivedKey
+                DbEncryptionManager.updateMasterPassphrase(getApplication<Application>(), password)
                 
                 // Load and decrypt BIP-39 mnemonic
-                val sp = getApplication<Application>().getSharedPreferences("simplex_security", Application.MODE_PRIVATE)
                 val encryptedMnemonic = sp.getString("encrypted_mnemonic", null)
                 if (encryptedMnemonic != null) {
-                    val decryptedMnemonic = CryptoUtils.decrypt(encryptedMnemonic, derived)
-                    _bip39Mnemonic.value = decryptedMnemonic
-                    
-                    // Re-derive the deterministic onion address
-                    val seed = com.example.data.security.Bip39Utils.deriveSeed(decryptedMnemonic)
-                    val hdOnionSeed = com.example.data.security.Bip39Utils.deriveTorOnionSeed(seed)
-                    val randomSuf = hdOnionSeed.take(6).joinToString("") { String.format("%02x", it).take(1) }
-                    _simplexOnionAddress.value = "sx67hg2tqp93${randomSuf}bca1sl8zqr.onion"
+                    try {
+                        val decryptedMnemonic = CryptoUtils.decrypt(encryptedMnemonic, derivedKey)
+                        _bip39Mnemonic.value = decryptedMnemonic
+                        
+                        // Re-derive the deterministic onion address
+                        val seed = com.example.data.security.Bip39Utils.deriveSeed(decryptedMnemonic)
+                        val hdOnionSeed = com.example.data.security.Bip39Utils.deriveTorOnionSeed(seed)
+                        val randomSuf = hdOnionSeed.take(6).joinToString("") { String.format("%02x", it).take(1) }
+                        _simplexOnionAddress.value = "sx67hg2tqp93${randomSuf}bca1sl8zqr.onion"
+                        CryptoUtils.zeroize(seed)
+                    } catch (e: Exception) {
+                        Log.e("MainViewModel", "Failed to decrypt mnemonic during unlock", e)
+                    }
                 }
 
                 _isUnlocked.value = true
                 resetInactivityTimer()
-                addSystemLog("VAULT", "Authenticated. Encrypted cache mapping refreshed.", "SUCCESS")
+                addSystemLog("VAULT", "Authenticated successfully. Zero-knowledge enclave unlocked.", "SUCCESS")
                 true
             } else {
                 addSystemLog("VAULT", "Authentication rejection: cryptographic hash mismatch.", "FAILED")
@@ -394,8 +461,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         masterSecretKey = null
         _bip39Mnemonic.value = ""
         _isUnlocked.value = false
+        DbEncryptionManager.clearMemory()
         resetInactivityTimer()
-        addSystemLog("VAULT", "Local credentials lock toggled. Key memory registers wiped.", "SUCCESS")
+        addSystemLog("VAULT", "Vault locked. Memory keys zeroized.", "SUCCESS")
     }
 
     fun resetInactivityTimer() {
@@ -642,18 +710,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             
             val payload = JSONObject()
-            payload.put("version", 1)
+            payload.put("version", 2)
             payload.put("client", "SimplexPrivacy")
             payload.put("vaultData", databaseArray)
             
             val contentString = payload.toString()
             
-            // Derive a key specifically for backup from passphrase (Zero-knowledge: password-derived)
-            val backupKey = CryptoUtils.deriveKey(passphrase)
+            // Derive a fortified key specifically for backup from passphrase (PBKDF2-HMAC-SHA512 + salt)
+            val backupSalt = CryptoUtils.generateSalt(32)
+            val backupKey = CryptoUtils.deriveKey(passphrase, backupSalt, CryptoUtils.DEFAULT_ITERATIONS)
             val encryptedBackup = CryptoUtils.encrypt(contentString, backupKey)
             
-            addSystemLog("BACKUP", "Created Zero-Knowledge cloud archive. Encrypted representation built.", "SUCCESS")
-            return encryptedBackup
+            val envelope = JSONObject().apply {
+                put("salt", Base64.encodeToString(backupSalt, Base64.NO_WRAP))
+                put("iterations", CryptoUtils.DEFAULT_ITERATIONS)
+                put("kdf", CryptoUtils.PBKDF2_ALGORITHM)
+                put("payload", encryptedBackup)
+            }
+            CryptoUtils.zeroize(backupSalt)
+            
+            addSystemLog("BACKUP", "Created Zero-Knowledge cloud archive with PBKDF2-HMAC-SHA512 protection.", "SUCCESS")
+            return envelope.toString()
         } catch (e: Exception) {
             addSystemLog("BACKUP", "Backup compilation error: ${e.localizedMessage}", "FAILED")
             return null
@@ -662,11 +739,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun restoreZeroKnowledgeBackup(backupPayload: String, passphrase: String): Boolean {
         return try {
-            val backupKey = CryptoUtils.deriveKey(passphrase)
-            val decryptedJson = CryptoUtils.decrypt(backupPayload, backupKey)
-            
+            val envelope = try { JSONObject(backupPayload) } catch (e: Exception) { null }
+            val (encryptedData, backupKey) = if (envelope != null && envelope.has("salt") && envelope.has("payload")) {
+                val salt = Base64.decode(envelope.getString("salt"), Base64.NO_WRAP)
+                val iters = envelope.optInt("iterations", CryptoUtils.DEFAULT_ITERATIONS)
+                val key = CryptoUtils.deriveKey(passphrase, salt, iters)
+                CryptoUtils.zeroize(salt)
+                Pair(envelope.getString("payload"), key)
+            } else {
+                // Legacy unversioned backup fallback
+                Pair(backupPayload, CryptoUtils.deriveKey(passphrase))
+            }
+
+            val decryptedJson = CryptoUtils.decrypt(encryptedData, backupKey)
             val payload = JSONObject(decryptedJson)
-            val version = payload.getInt("version")
             val array = payload.getJSONArray("vaultData")
             
             viewModelScope.launch(Dispatchers.IO) {
@@ -685,20 +771,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     vaultDao.insertVaultItem(item)
                 }
                 
-                // Let's also unlock using the backup passphrase as the new master key!
-                masterSecretKey = backupKey
+                // Set up credentials with fortified PBKDF2-HMAC-SHA512
+                val newSalt = CryptoUtils.generateSalt(32)
+                val newMasterKey = CryptoUtils.deriveKey(passphrase, newSalt, CryptoUtils.DEFAULT_ITERATIONS)
+                masterSecretKey = newMasterKey
+                
                 val sp = getApplication<Application>().getSharedPreferences("simplex_security", Application.MODE_PRIVATE)
                 val verificationText = "VERIFIED_KEY_DERIVATION"
-                val encryptedVerification = CryptoUtils.encrypt(verificationText, backupKey)
-                sp.edit().putString("pass_hash", encryptedVerification).apply()
+                val encryptedVerification = CryptoUtils.encrypt(verificationText, newMasterKey)
+                sp.edit()
+                    .putString("kdf_salt", Base64.encodeToString(newSalt, Base64.NO_WRAP))
+                    .putInt("kdf_iterations", CryptoUtils.DEFAULT_ITERATIONS)
+                    .putString("kdf_algorithm", CryptoUtils.PBKDF2_ALGORITHM)
+                    .putString("pass_hash", encryptedVerification)
+                    .apply()
+                
+                DbEncryptionManager.updateMasterPassphrase(getApplication<Application>(), passphrase)
+                CryptoUtils.zeroize(newSalt)
+
                 _isUnlocked.value = true
                 _isPasswordSetup.value = true
                 
-                addSystemLog("BACKUP", "Restored vault snapshot. Restored references matched successfully.", "SUCCESS")
+                addSystemLog("BACKUP", "Restored vault snapshot. References decrypted and migrated to fortified KDF.", "SUCCESS")
             }
             true
         } catch (e: Exception) {
-            addSystemLog("BACKUP", "Backup restoration signature invalid.", "FAILED")
+            addSystemLog("BACKUP", "Backup restoration signature invalid or incorrect passphrase.", "FAILED")
             false
         }
     }

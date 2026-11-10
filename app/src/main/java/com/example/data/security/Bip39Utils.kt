@@ -9,7 +9,8 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
-// [REAL] Реальная математическая реализация стандарта BIP-39: 128-бит SecureRandom энтропия, SHA-256 чексумма, канонический словарь 2048 слов.
+// [REAL] Полная математическая реализация стандарта BIP-39: 128/256-бит SecureRandom энтропия, канонический словарь 2048 слов.
+// [PROD-READY] Полная проверка контрольной суммы SHA-256 в validateMnemonic() и очистка памяти zeroize (Этап 1).
 // [SECURITY-CRITICAL] Корневой генератор мастер-сидов и детерминированной деривации ключей (Vault AES, SimpleX Identity, Tor Seed, DHT Hash).
 object Bip39Utils {
 
@@ -22,16 +23,27 @@ object Bip39Utils {
     }
 
     /**
-     * Generates a random 12-word BIP-39 mnemonic phrase.
+     * Fast inverted index map for O(1) word-to-index lookup during validation.
      */
-    fun generateMnemonic(): String {
-        val entropy = ByteArray(16) // 128 bits
-        SecureRandom().nextBytes(entropy)
-        return entropyToMnemonic(entropy)
+    val wordIndexMap: Map<String, Int> by lazy {
+        englishWordList.mapIndexed { index, word -> word to index }.toMap()
     }
 
     /**
-     * Converts a 16-byte (128-bit) entropy array into a 12-word mnemonic with checksum.
+     * Generates a random 12-word BIP-39 mnemonic phrase (128-bit entropy).
+     */
+    fun generateMnemonic(): String {
+        val entropy = ByteArray(16) // 128 bits
+        try {
+            SecureRandom().nextBytes(entropy)
+            return entropyToMnemonic(entropy)
+        } finally {
+            zeroize(entropy)
+        }
+    }
+
+    /**
+     * Converts a 16-byte (128-bit) entropy array into a 12-word mnemonic with SHA-256 checksum.
      */
     fun entropyToMnemonic(entropy: ByteArray): String {
         val hash = MessageDigest.getInstance("SHA-256").digest(entropy)
@@ -70,34 +82,110 @@ object Bip39Utils {
     }
 
     /**
-     * Validates if a 12-word string is a valid BIP-39 mnemonic phrase.
-     * // [NEEDS-WORK] Проверяет только словарное присутствие, но не валидирует 4-битный SHA-256 чексумм-хвост последнего слова (запланировано на Этап 1).
+     * Fully validates if a mnemonic phrase is mathematically compliant with the BIP-39 specification.
+     * Verifies:
+     * 1. Word count is valid (12 or 24 words).
+     * 2. All words exist in the canonical 2048-word dictionary.
+     * 3. Reconstructs entropy and verifies the SHA-256 checksum bits against the trailing bits of the last word.
      */
     fun validateMnemonic(mnemonic: String): Boolean {
         val words = mnemonic.trim().split("\\s+".toRegex())
-        if (words.size != 12) return false
-        val list = englishWordList
-        return words.all { list.contains(it) }
+        if (words.size != 12 && words.size != 24) return false
+        val map = wordIndexMap
+
+        val indices = IntArray(words.size)
+        for (i in words.indices) {
+            val idx = map[words[i]] ?: return false
+            indices[i] = idx
+        }
+
+        // Convert word indices to bit stream
+        val totalBits = words.size * 11
+        val bitArray = BooleanArray(totalBits)
+        for (i in words.indices) {
+            val wordIdx = indices[i]
+            for (b in 0..10) {
+                bitArray[i * 11 + b] = (wordIdx and (1 shl (10 - b))) != 0
+            }
+        }
+
+        // Calculate entropy length and checksum length
+        // 12 words: 132 bits total -> 128 entropy bits + 4 checksum bits (CS = ENT / 32 = 4)
+        // 24 words: 264 bits total -> 256 entropy bits + 8 checksum bits (CS = ENT / 32 = 8)
+        val checksumLengthBits = totalBits / 33
+        val entropyBits = totalBits - checksumLengthBits
+        val entropyBytes = ByteArray(entropyBits / 8)
+
+        for (i in entropyBytes.indices) {
+            var byteVal = 0
+            for (b in 0..7) {
+                if (bitArray[i * 8 + b]) {
+                    byteVal = byteVal or (1 shl (7 - b))
+                }
+            }
+            entropyBytes[i] = byteVal.toByte()
+        }
+
+        // Recompute SHA-256 over reconstructed entropy
+        val hash = MessageDigest.getInstance("SHA-256").digest(entropyBytes)
+
+        try {
+            // Verify checksum bits
+            for (b in 0 until checksumLengthBits) {
+                val hashByte = hash[b / 8].toInt() and 0xFF
+                val expectedBit = (hashByte and (1 shl (7 - (b % 8)))) != 0
+                val actualBit = bitArray[entropyBits + b]
+                if (expectedBit != actualBit) {
+                    return false
+                }
+            }
+            return true
+        } finally {
+            zeroize(entropyBytes)
+        }
     }
 
     /**
-     * Derives a 512-bit (64-byte) seed from a mnemonic using PBKDF2-HMAC-SHA512.
-     * // [SECURITY-CRITICAL] Стандартный BIP-39 KDF (2048 итераций PBKDF2-HMAC-SHA512).
-     * // [NEEDS-WORK] Требуется добавить zeroize для чувствительных byte/char массивов для защиты от дампов памяти Android (Этап 1).
+     * Derives a 512-bit (64-byte) seed from a mnemonic using PBKDF2-HMAC-SHA512 (2048 iterations).
+     * Zeroizes internal arrays to prevent credential residue in JVM heap.
      */
     fun deriveSeed(mnemonic: String, passphrase: String = ""): ByteArray {
         val normalizedMnemonic = mnemonic.trim().replace("\\s+".toRegex(), " ")
-        val salt = "mnemonic$passphrase"
+        val mnemonicChars = normalizedMnemonic.toCharArray()
+        val salt = "mnemonic$passphrase".toByteArray(Charsets.UTF_8)
         
-        // PBKDF2-HMAC-SHA512: 2048 iterations, 512-bit key length
         val spec = PBEKeySpec(
-            normalizedMnemonic.toCharArray(),
-            salt.toByteArray(Charsets.UTF_8),
+            mnemonicChars,
+            salt,
             2048,
             512
         )
-        val skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
-        return skf.generateSecret(spec).encoded
+        try {
+            val skf = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
+            return skf.generateSecret(spec).encoded
+        } finally {
+            spec.clearPassword()
+            zeroize(mnemonicChars)
+            zeroize(salt)
+        }
+    }
+
+    /**
+     * Securely clears byte array contents in memory.
+     */
+    fun zeroize(bytes: ByteArray?) {
+        if (bytes != null) {
+            java.util.Arrays.fill(bytes, 0.toByte())
+        }
+    }
+
+    /**
+     * Securely clears char array contents in memory.
+     */
+    fun zeroize(chars: CharArray?) {
+        if (chars != null) {
+            java.util.Arrays.fill(chars, '\u0000')
+        }
     }
 
     /**

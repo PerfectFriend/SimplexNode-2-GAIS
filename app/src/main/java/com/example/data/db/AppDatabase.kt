@@ -8,7 +8,13 @@ import com.example.data.model.ActivityLog
 import com.example.data.model.SharedFile
 import com.example.data.model.SimplexServer
 import com.example.data.model.VaultItem
+import com.example.data.security.DbEncryptionManager
+import net.sqlcipher.database.SQLiteDatabase
+import net.sqlcipher.database.SupportFactory
 
+// [REAL] База данных Room с шифрованием на лету через SQLCipher (AES-256 в режиме CBC с HMAC-SHA512).
+// [PROD-READY] База данных зашифрована на диске, открывается через SupportFactory и ключ DbEncryptionManager (Этап 1).
+// [SECURITY-CRITICAL] Локальное хранилище данных приложения, паролей и криптографических метаданных.
 @Database(
     entities = [VaultItem::class, ActivityLog::class, SimplexServer::class, SharedFile::class],
     version = 2,
@@ -26,13 +32,26 @@ abstract class AppDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
+                if (INSTANCE != null) return INSTANCE!!
+
+                val appContext = context.applicationContext
+
+                // Load native SQLCipher C/C++ engine binaries
+                SQLiteDatabase.loadLibs(appContext)
+
+                // Derive 256-bit AES encryption key for SQLCipher page-level encryption
+                val passphraseBytes = DbEncryptionManager.getDatabasePassphraseBytes(appContext)
+                val factory = SupportFactory(passphraseBytes)
+
                 val instance = Room.databaseBuilder(
-                    context.applicationContext,
+                    appContext,
                     AppDatabase::class.java,
                     "simplex_privacy_vault.db"
                 )
+                .openHelperFactory(factory)
                 .fallbackToDestructiveMigration()
                 .build()
+
                 INSTANCE = instance
                 instance
             }

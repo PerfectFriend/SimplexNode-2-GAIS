@@ -13,6 +13,22 @@ import java.io.InputStream
 object MetadataStripper {
     private const val TAG = "MetadataStripper"
 
+    private fun logD(tag: String, msg: String) {
+        try {
+            Log.d(tag, msg)
+        } catch (e: Throwable) {
+            // No-op in JVM unit test environments without mocked android.util.Log
+        }
+    }
+
+    private fun logE(tag: String, msg: String, tr: Throwable?) {
+        try {
+            Log.e(tag, msg, tr)
+        } catch (e: Throwable) {
+            // No-op in JVM unit test environments without mocked android.util.Log
+        }
+    }
+
     /**
      * Strips metadata from a JPEG or PNG byte stream.
      * Returns a clean byte array with all metadata structures discarded.
@@ -28,12 +44,12 @@ object MetadataStripper {
                     stripPngMetadata(bytes)
                 }
                 else -> {
-                    Log.d(TAG, "MimeType '$mimeType' does not contain Exif headers. Returning copy.")
+                    logD(TAG, "MimeType '$mimeType' does not contain Exif headers. Returning copy.")
                     bytes
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error stripping metadata, falling back to raw stream copy.", e)
+            logE(TAG, "Error stripping metadata, falling back to raw stream copy.", e)
             bytes
         }
     }
@@ -82,7 +98,7 @@ object MetadataStripper {
                 // APP1 Marker (0xFFE1) contains EXIF / XMP metadata
                 // APP2 Marker (0xFFE2) often contains ICC Color profiles (keep or discard, discarding here for total anonymity)
                 if (byte2 == 0xE1 || byte2 == 0xE2) {
-                    Log.d(TAG, "EXCISE: Dropped JPEG APP${byte2 - 0xE0} segment of length $segmentLength bytes.")
+                    logD(TAG, "EXCISE: Dropped JPEG APP${byte2 - 0xE0} segment of length $segmentLength bytes.")
                 } else {
                     // Retain safely: write marker and entire segment payload
                     out.write(byte1)
@@ -138,7 +154,7 @@ object MetadataStripper {
                     out.write(raw, i, entireChunkSize)
                 }
             } else {
-                Log.d(TAG, "EXCISE: Dropped ancillary PNG chunk: $chunkType (size: $chunkLength bytes)")
+                logD(TAG, "EXCISE: Dropped ancillary PNG chunk: $chunkType (size: $chunkLength bytes)")
             }
 
             i += 4 + 4 + chunkLength + 4 // Advance pointer
