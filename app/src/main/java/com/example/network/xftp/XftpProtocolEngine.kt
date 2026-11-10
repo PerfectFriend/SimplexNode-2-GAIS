@@ -14,17 +14,10 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.UUID
 
-/**
- * SimpleX File Transfer Protocol (XFTP) Engine for ParanoidX Node.
- * 
- * Implements the SimpleX XFTP specification for decentralized, end-to-end encrypted
- * chunked file transfers without persistent storage or metadata leaks on file relays:
- * 1. 64KB Chunk Segmentation.
- * 2. Per-chunk SHA-256 cryptographic verification hashes.
- * 3. Individual chunk AES-256-GCM authenticated cipher wrapping.
- * 4. XFTP manifest generation with `xftp://` URI scheme.
- * 5. Multi-relay chunk distribution and reassembly.
- */
+// [REAL] Чанкирование на блоки по 64KB, вычисление SHA-256 хэшей каждого чанка, поблочное шифрование AES-256-GCM и верификация целостности при сборке (reassembleFile).
+// [SIM] Сетевой транспорт отправки/скачивания чанков на XFTP-релей является симуляцией (delay).
+// [SECURITY-CRITICAL] Криптографическое разделение файлов, контроль целостности и предотвращение утечек метаданных.
+// [NEEDS-WORK] Реализация протокольного транспорта XFTP через SOCKS5/Tor запланирована на Этап 4.
 object XftpProtocolEngine {
     private const val TAG = "XftpProtocolEngine"
     const val DEFAULT_CHUNK_SIZE = 64 * 1024 // 64 KB
@@ -153,6 +146,7 @@ object XftpProtocolEngine {
 
     /**
      * Simulates uploading chunks of an XFTP manifest to the relay server over SOCKS5/Tor.
+     * // [SIM] Сетевой цикл симулирует задержку передачи чанков через delay(120); реальной передачи байтов в сеть нет.
      */
     suspend fun uploadTransfer(
         manifest: XftpTransferManifest,
@@ -163,7 +157,8 @@ object XftpProtocolEngine {
 
         val total = manifest.chunks.size
         for ((idx, chunk) in manifest.chunks.withIndex()) {
-            delay(120) // Protocol network frame delay
+            // [SIM] Имитация времени передачи чанка через сеть Tor/SOCKS5
+            delay(120) 
             chunk.isUploaded = true
             val prog = (idx + 1).toFloat() / total
             manifest.progress = prog

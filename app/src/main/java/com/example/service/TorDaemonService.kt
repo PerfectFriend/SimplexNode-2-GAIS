@@ -17,12 +17,10 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 
-/**
- * Foreground Service responsible for spawning, managing, and maintaining the Tor binary lifecycle.
- * Fully prepared for native compilation. Includes automatic asset extractors to pull the compiled
- * 'tor' binary from the app assets into private sandbox storage, set executable permissions,
- * and execute the daemon process in background.
- */
+// [REAL] Реальный Android Foreground Service с NotificationChannel, ProcessBuilder и мониторингом stdout/stderr.
+// [SIM] Настоящий ELF-бинарник Tor в assets/bin/tor отсутствует, поэтому вызов ProcessBuilder завершается fallback-ошибкой.
+// [SECURITY-CRITICAL] Локальный Tor SOCKS5 прокси (:9050) и ControlPort (:9051).
+// [NEEDS-WORK] Интеграция реальных бинарников Tor под целевые ABI архитектуры Android запланирована на Этап 2.
 class TorDaemonService : Service() {
 
     private var torProcess: Process? = null

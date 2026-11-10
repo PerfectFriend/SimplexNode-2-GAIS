@@ -8,6 +8,9 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 
+// [REAL] Полностью рабочая низкоуровневая реализация RFC 1928 SOCKS5 клиента через сырые сокеты Java Socket.
+// [SECURITY-CRITICAL] Криптографически важный сетевой транспорт приватности Tor/SOCKS5. Защита от DNS-leak.
+// [NEEDS-WORK] testConnection выполняет только валидацию хэндшейка и завершает соединение. Для сквозного проксирования требуется реализация SocketFactory / ProxyTunnel (Этап 2).
 object Socks5ProxyClient {
     private const val TAG = "Socks5ProxyClient"
 

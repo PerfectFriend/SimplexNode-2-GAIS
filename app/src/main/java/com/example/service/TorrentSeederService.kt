@@ -30,11 +30,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
 
-/**
- * Foreground Service responsible for seeding decentralized Vault chunks (P2P swarm)
- * and monitoring device telemetry: Power, Inactivity, and Latency.
- * Implements a real database-backed Least Recently Used (LRU) cache eviction strategy.
- */
+// [REAL] Аппаратная телеметрия Android: BroadcastReceiver для статуса зарядки (ACTION_POWER), активности экрана (ACTION_SCREEN_ON/OFF) и мониторинг сети через ConnectivityManager.NetworkCallback.
+// [SIM] P2P BitTorrent сидирование и раздача чанков — симуляция (нет встроенного libtorrent ядра). Измерение пинга — рандомизатор.
+// [NEEDS-WORK] Интеграция реального BitTorrent/DHT движка (jlibtorrent) и физического криптоконтейнера запланирована на Этап 5.
 class TorrentSeederService : Service() {
 
     private var connectivityManager: ConnectivityManager? = null
@@ -194,7 +192,7 @@ class TorrentSeederService : Service() {
 
     private fun measureLatency() {
         serviceScope.launch {
-            // Measure latency simulation (in native code, this pings the bootstrap DHT nodes or socks proxies)
+            // [SIM] Измерение пинга DHT симулируется случайным числом 20..150ms до внедрения нативного DHT-пингера (Этап 5).
             val mockPing = (20..150).random()
             currentPingMs.value = mockPing
             Log.d(TAG, "Measured DHT Node Latency: ${mockPing}ms")

@@ -11,10 +11,8 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * Robust, client-side cryptographic utility implementing AES-256 GCM encryption/decryption.
- * Can use a master text pin or user passphrase to derive encryption keys via SHA-256.
- */
+// [REAL] Реальное шифрование и расшифрование AES-256-GCM (12-байтный случайный IV от SecureRandom, 128-битный GCM auth tag).
+// [SECURITY-CRITICAL] Криптографический модуль для шифрования хранилища и секретов.
 object CryptoUtils {
 
     private const val ALGORITHM = "AES/GCM/NoPadding"
@@ -23,6 +21,8 @@ object CryptoUtils {
 
     /**
      * Derives a 256-bit AES key from a given PIN or passphrase.
+     * // [SECURITY-CRITICAL]
+     * // [NEEDS-WORK] Слабый KDF: сейчас выполняется 1 проход SHA-256 без соли. Уязвимо для перебора по словарям. На Этапе 1 будет заменено на PBKDF2-HMAC-SHA512 / Argon2id с солью и >=100_000 итераций.
      */
     fun deriveKey(passphrase: String): SecretKey {
         val digest = MessageDigest.getInstance("SHA-256")
@@ -83,7 +83,8 @@ object CryptoUtils {
 
     /**
      * Simulates E2E file encryption.
-     * Generates a payload representation of the encrypted file.
+     * // [SIM] Упрощённая строковая симуляция шифрования файлов через разделитель.
+     * // [NEEDS-WORK] Требуется реальное потоковое шифрование байтов через XFTP / 64KB чанки (Этап 4).
      */
     fun encryptFileSimulation(fileName: String, fileContent: String, secretKey: SecretKey): String {
         val metadata = "$fileName|$fileContent"
@@ -92,7 +93,7 @@ object CryptoUtils {
 
     /**
      * Simulates E2E file decryption.
-     * Returns a Pair of (FileName, DecryptedContent).
+     * // [SIM] Упрощённая симуляция разбора строки с разделителем.
      */
     fun decryptFileSimulation(encryptedPayload: String, secretKey: SecretKey): Pair<String, String> {
         val decrypted = decrypt(encryptedPayload, secretKey)

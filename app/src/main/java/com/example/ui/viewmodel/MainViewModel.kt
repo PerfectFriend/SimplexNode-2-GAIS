@@ -37,8 +37,12 @@ import org.json.JSONArray
 import org.json.JSONObject
 import javax.crypto.SecretKey
 
+// [NEEDS-WORK] God-object архитектура (1690 строк): класс объединяет UI-состояние, БД, криптографию, чат, сеть, VPN и P2P. Декомпозиция на отдельные фиче-ViewModel запланирована на Этап 6.
+// [SECURITY-CRITICAL] Главный координатор криптографического контура и изоляции секретов.
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
+    // [REAL] Локальная база данных Room (заметки, логи, серверы, файлы).
+    // [NEEDS-WORK] База Room пока хранится в открытом виде SQLite (интеграция SQLCipher шифрования запланирована на Этап 1).
     private val db = AppDatabase.getDatabase(application)
     private val vaultDao = db.vaultDao()
     private val simplexDao = db.simplexDao()
@@ -46,6 +50,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val logDao = db.activityLogDao()
 
     // --- Master Encryption Password State ---
+    // [REAL] Управление состоянием блокировки интерфейса и автоблокировки по неактивности
     private val _isUnlocked = MutableStateFlow(false)
     val isUnlocked: StateFlow<Boolean> = _isUnlocked.asStateFlow()
 
@@ -53,13 +58,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val isPasswordSetup: StateFlow<Boolean> = _isPasswordSetup.asStateFlow()
 
     // --- Inactivity Tracking ---
+    // [REAL] Таймер неактивности пользователя
     private val _lastActivityTime = MutableStateFlow(System.currentTimeMillis())
     val lastActivityTime: StateFlow<Long> = _lastActivityTime.asStateFlow()
 
+    // [SECURITY-CRITICAL] Секретный ключ AES в памяти JVM
     private var masterSecretKey: SecretKey? = null
     private var cachedPassphraseHash: String = ""
 
     // --- BIP-39 Mnemonic Seed State ---
+    // [REAL] Хранение и распространение мнемоники через Bip39Utils
     private val _bip39Mnemonic = MutableStateFlow("")
     val bip39Mnemonic: StateFlow<String> = _bip39Mnemonic.asStateFlow()
 
@@ -460,6 +468,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _torLatency.value = 0
             _torStability.value = "0.0%"
             
+            // [REAL] Запуск Foreground Service
             try {
                 val intent = Intent(app, TorDaemonService::class.java).apply {
                     action = TorDaemonService.ACTION_START
@@ -473,6 +482,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 Log.e("MainViewModel", "Failed starting background TorDaemonService", e)
             }
 
+            // [SIM] Симуляция bootstrap фазы Tor демона (задержки, вывод логов, генератор случайного пинга). 
+            // Реальный handshake и ControlPort опрос запланированы на Этап 2.
             viewModelScope.launch {
                 addTorLog("SYSTEM: Requesting SOCKS5 socks interface init...")
                 addTorLog("TOR: Loading Tor configuration directory...")
@@ -706,6 +717,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Submits a message through the SimpleX pipeline.
+     * // [SIM] Пошаговая визуальная эмуляция отправки сообщения (X25519 DH, SOCKS5 сокет, Double Ratchet, delay, автоответ).
+     * // [NEEDS-WORK] Подключение реального SMP-транспорта запланировано на Этап 3.
+     */
     fun submitSimplexMessage(server: SimplexServer, message: String) {
         viewModelScope.launch {
             _isSendingMessage.value = true

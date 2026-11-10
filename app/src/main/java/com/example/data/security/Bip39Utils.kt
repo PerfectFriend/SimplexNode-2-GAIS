@@ -9,10 +9,8 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
-/**
- * Native cryptographic implementation of BIP-39 Mnemonic Seed Generation, Validation,
- * and HD Key Derivation for ParanoidX Node.
- */
+// [REAL] Реальная математическая реализация стандарта BIP-39: 128-бит SecureRandom энтропия, SHA-256 чексумма, канонический словарь 2048 слов.
+// [SECURITY-CRITICAL] Корневой генератор мастер-сидов и детерминированной деривации ключей (Vault AES, SimpleX Identity, Tor Seed, DHT Hash).
 object Bip39Utils {
 
     /**
@@ -73,6 +71,7 @@ object Bip39Utils {
 
     /**
      * Validates if a 12-word string is a valid BIP-39 mnemonic phrase.
+     * // [NEEDS-WORK] Проверяет только словарное присутствие, но не валидирует 4-битный SHA-256 чексумм-хвост последнего слова (запланировано на Этап 1).
      */
     fun validateMnemonic(mnemonic: String): Boolean {
         val words = mnemonic.trim().split("\\s+".toRegex())
@@ -83,6 +82,8 @@ object Bip39Utils {
 
     /**
      * Derives a 512-bit (64-byte) seed from a mnemonic using PBKDF2-HMAC-SHA512.
+     * // [SECURITY-CRITICAL] Стандартный BIP-39 KDF (2048 итераций PBKDF2-HMAC-SHA512).
+     * // [NEEDS-WORK] Требуется добавить zeroize для чувствительных byte/char массивов для защиты от дампов памяти Android (Этап 1).
      */
     fun deriveSeed(mnemonic: String, passphrase: String = ""): ByteArray {
         val normalizedMnemonic = mnemonic.trim().replace("\\s+".toRegex(), " ")

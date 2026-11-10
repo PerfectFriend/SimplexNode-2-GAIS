@@ -17,15 +17,9 @@ import okhttp3.WebSocketListener
 import java.security.SecureRandom
 import java.util.UUID
 
-/**
- * SimpleX Messaging Protocol (SMP) Engine for ParanoidX Node.
- * 
- * Implements the core architecture of SimpleX Chat:
- * 1. Unidirectional Message Queues (no persistent user identifiers on servers).
- * 2. Asymmetric cryptographic envelope delivery (Double Ratchet payload framing).
- * 3. Ephemeral server tokens for queue authorization (NEW, SEND, RECV, ACK).
- * 4. WebSocket & SOCKS5 transport layer capable of traversing Onion V3 and clearnet SMP relays.
- */
+// [SECURITY-CRITICAL] Архитектура очередей SMP (SimpleX Messaging Protocol), изоляция идентификаторов и Double Ratchet.
+// [SIM] Сетевой транспорт является симуляцией (внутримодульные события и delay вместо реальных WebSocket/TLS соединений к серверам relay).
+// [NEEDS-WORK] Интеграция реального сетевого клиента SimpleX SMP через WebSocket поверх SOCKS5/Tor запланирована на Этап 3.
 object SmpProtocolEngine {
     private const val TAG = "SmpProtocolEngine"
 
@@ -145,6 +139,7 @@ object SmpProtocolEngine {
     /**
      * Sends an end-to-end encrypted packet into a forward SMP queue.
      * Uses Tor SOCKS5 proxy if target is an onion server or if Tor routing is enabled.
+     * // [SIM] Сетевая передача симулируется через delay(400); реальный WebSocket фрейм к серверу не уходит (Этап 3).
      */
     suspend fun sendSmpEnvelope(
         targetQueue: SmpQueue,
@@ -164,7 +159,8 @@ object SmpProtocolEngine {
             val wirePacket = "SMP/2.0 SEND ${targetQueue.queueId} ${targetQueue.writeToken}\n$encryptedContent"
             
             log("TRANSMIT: Routing ${wirePacket.length} bytes via ${if (useTorProxy) "Tor SOCKS5 Proxy" else "Direct TLS"}...")
-            delay(400) // Protocol network handshake delay
+            // [SIM] Задержка эмуляции сетевого цикла доставки
+            delay(400) 
             
             targetQueue.messageCount++
             log("ACK_RECEIPT: Relay ${targetQueue.serverHost} acknowledged receipt of packet (Status: 200 OK)")
@@ -178,6 +174,7 @@ object SmpProtocolEngine {
     /**
      * Simulates receiving an incoming SMP frame from a subscribed queue,
      * verifying the token and triggering automatic delivery ACK.
+     * // [SIM] Имитация входящего пакета из очереди для тестирования UI и жизненного цикла очередей.
      */
     fun receiveIncomingEnvelope(
         queue: SmpQueue,
