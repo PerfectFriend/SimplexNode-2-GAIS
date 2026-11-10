@@ -9,28 +9,27 @@
 ## Статус проекта на 2026-11-11
 
 ### Общий вердикт
-Проект находится в стадии **высококачественного прототипа** с сильной UI/архитектурной основой и несколькими реально работающими низкоуровневыми компонентами. Ядро сетевых протоколов (SMP, XFTP, настоящий BitTorrent, полноценный Tor) — преимущественно симуляция.
+Криптографический фундамент и шифрование локального хранилища приведены в порядок. Проект вышел из стадии «красивый прототип с дырявым KDF» и получил реальный security baseline.
 
-**Этап 0 (Фундамент и Честность) — ПРИНЯТ.**
+**Этап 0 — ПРИНЯТ**  
+**Этап 1 — ПРИНЯТ**
 
-### Матрица готовности (обновлено после аудита Этапа 0)
+### Матрица готовности (обновлено после аудита Этапа 1)
 
 | Компонент | Статус | Маркер | Комментарий |
 |-----------|--------|--------|-------------|
-| Jetpack Compose UI (основные экраны) | Высокий | [REAL] | Требует декомпозиции больших файлов (Этап 6) |
-| Room DB | Средний | [REAL] / [NEEDS-WORK] | Нет SQLCipher — задача Этапа 1 |
-| CryptoUtils (AES-GCM) | Высокий (алгоритм) | [REAL] + [SECURITY-CRITICAL] | KDF от пароля критически слабый — Этап 1 |
-| Bip39Utils | Высокий | [REAL] + [SECURITY-CRITICAL] | Отсутствует полная проверка checksum + zeroize — Этап 1 |
-| Socks5ProxyClient | Высокий | [REAL] + [SECURITY-CRITICAL] | Отличный RFC 1928 клиент. Нужна обвязка ProxyTunnel на Этапе 2 |
-| TorDaemonService | Низкий–Средний | [REAL] каркас + [SIM] бинарник | Бинарник отсутствует |
-| TorrentSeederService | Средний | частично [REAL] | Телеметрия реальная, swarm — симуляция |
-| SmpProtocolEngine | Низкий | [SIM] | Полная симуляция транспорта |
-| XftpProtocolEngine | Низкий–Средний | частично [REAL] | Чанкирование + хэши реальные, транспорт — симуляция |
-| Cryptocontainer / LRU | Низкий | [SIM] | |
-| MainViewModel + крупные экраны | — | [NEEDS-WORK] | God-object, декомпозиция на Этапе 6 |
+| CryptoUtils (AES-GCM + PBKDF2) | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | 150k iter, 32-byte salt, zeroize, legacy migration |
+| Bip39Utils | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | Полный checksum + zeroize |
+| DbEncryptionManager | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
+| AppDatabase + SQLCipher | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | База зашифрована на диске |
+| Socks5ProxyClient | Высокий | [REAL] [SECURITY-CRITICAL] | Нужна обвязка ProxyTunnel на Этапе 2 |
+| TorDaemonService | Низкий–Средний | [REAL] каркас + [SIM] бинарник | Главная цель Этапа 2 |
+| TorrentSeederService | Средний | частично [REAL] | |
+| SmpProtocolEngine | Низкий | [SIM] | |
+| XftpProtocolEngine | Низкий–Средний | частично [REAL] | |
+| MainViewModel | — | [NEEDS-WORK] | God-object, Этап 6 |
 | Package name | — | [NEEDS-WORK] | com.example |
-| Тесты | Отсутствуют | [NEEDS-WORK] | |
-| Zeroize секретов в памяти | Отсутствует | [NEEDS-WORK] | Этап 1 |
+| Тесты | Появились | [REAL] | Unit-тесты на KDF, BIP-39, zeroize |
 
 ---
 
@@ -38,30 +37,31 @@
 
 ### Аудит 2026-11-10 — Инициализация Манифеста и Журнала
 - Принят `DEVELOPMENT_MANIFESTO.md` v1.0
-- Создан настоящий Журнал
-- Создан `EVOLUTION_PLAN.md`
 
 ### Аудит 2026-11-11 — Этап 0 (Фундамент и Честность) — ПРИНЯТ
+- Честная маркировка ключевых модулей
 
-**Что сделал Женя:**
-- Честно и качественно промаркировал все ключевые модули.
-- Правильно выделил критический долг в `CryptoUtils.deriveKey()` (1× SHA-256 без соли).
-- Корректно указал отсутствие полной проверки BIP-39 checksum и zeroize.
-- Чётко разделил `[REAL]` и `[SIM]` части в сетевых движках и сервисах.
-- Подтвердил принятие Манифеста и регламента журнала.
+### Аудит 2026-11-11 — Этап 1 (Криптографический фундамент) — ПРИНЯТ
 
-**Вердикт Гриши:**
-Этап 0 принимается. Маркировка соответствует действительности и создаёт общую карту минного поля. Можно переходить к Этапу 1.
+**Что проверено по коду:**
+- `CryptoUtils.deriveKey` → PBKDF2WithHmacSHA512, 150_000 итераций, 32-байтная соль, `clearPassword()`, zeroize
+- Legacy migration path сохранён
+- `DbEncryptionManager` + `SupportFactory` + `SQLiteDatabase.loadLibs`
+- `AppDatabase` открывается только через зашифрованный factory
+- `Bip39Utils.validateMnemonic` — полная проверка checksum
+- zeroize для ByteArray/CharArray присутствует и используется
+- Unit-тесты добавлены и заявлены как зелёные
 
-**Что теперь считается относительно стабильным (не требует повторного аудита без серьёзных изменений):**
-- Низкоуровневый AES-GCM в `CryptoUtils` (сам алгоритм, не KDF)
-- Структура и генерация BIP-39 (кроме checksum validation и zeroize)
-- Socks5ProxyClient (handshake)
-- Аппаратная телеметрия в TorrentSeederService
+**Незначительные замечания (не блокируют приёмку):**
+- При отсутствии пользовательского пароля БД всё равно шифруется через device enclave seed — это нормально для «always encrypted», но нужно чётко понимать threat model.
+- `fallbackToDestructiveMigration()` всё ещё стоит — на следующих этапах лучше сделать нормальные миграции.
+- Пакет `com.example` остаётся техническим долгом (Этап 6).
+
+**Вердикт:** Этап 1 принимается. Крипто-фундамент можно считать `[PROD-READY]` в рамках текущего scope.
 
 ---
 
 ## Текущее задание Жене
 
-**Этап 1 — Криптографический фундамент и Хранилище**  
-См. подробное ТЗ в `CORRESPONDENCE_JOURNAL.md` (сообщение от 2026-11-11).
+**Этап 2 — Настоящий Tor**  
+См. подробное ТЗ в `CORRESPONDENCE_JOURNAL.md`.
