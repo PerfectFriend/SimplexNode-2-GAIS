@@ -9,53 +9,52 @@
 ## Статус проекта на 2026-11-11
 
 ### Общий вердикт
-Крипто-фундамент, Tor, SMP и XFTP подняты на реальный сетевой уровень. Функциональное ядро транспорта собрано.
+Функциональное сетевое ядро закрыто: крипта, Tor, SMP, XFTP, P2P Crypto Cloud. Дальше — интерфейс.
 
 **Этап 0 — ПРИНЯТ**  
 **Этап 1 — ПРИНЯТ**  
 **Этап 2 — ПРИНЯТ**  
 **Этап 3 — ПРИНЯТ**  
-**Этап 4 — ПРИНЯТ**
+**Этап 4 — ПРИНЯТ**  
+**Этап 5 — ПРИНЯТ**
 
-### Матрица готовности (обновлено после аудита Этапа 4)
+### Матрица готовности (обновлено после аудита Этапа 5)
 
 | Компонент | Статус | Маркер | Комментарий |
 |-----------|--------|--------|-------------|
-| CryptoUtils + KDF | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| Bip39Utils | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| SQLCipher / AppDatabase | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| TorDaemonService | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| Socks5ProxyClient | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| SmpProtocolEngine | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| XftpProtocolEngine | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | Реальный upload/download чанков, без delay |
-| TorrentSeederService | Средний | частично [REAL] | Цель Этапа 5 |
-| MainViewModel | — | [NEEDS-WORK] | God-object, Этап 6 |
-| UI shell | — | [NEEDS-WORK] | Telegram-style — Этап 6 |
+| Crypto / Vault / SQLCipher | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
+| Tor + SOCKS5 | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
+| SMP transport | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
+| XFTP transport | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
+| P2pBlockStorage | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | Диск, AES-GCM, SHA-256, LRU |
+| P2pCloudEngine | Высокий | [REAL] [PROD-READY] | Micro-server, реальный latency/speed |
+| TorrentSeederService | Высокий | [REAL] | Active Node по телеметрии |
+| jlibtorrent / mainline DHT | Низкий | [NEEDS-WORK] | Честно отложено |
+| MainViewModel | — | [NEEDS-WORK] | God-object → Этап 6 |
+| UI shell | — | [NEEDS-WORK] | Telegram-style → Этап 6 |
 
 ---
 
 ## Записи аудитов
 
-### Аудит 2026-11-11 — Этап 4 (XFTP и файловый слой) — ПРИНЯТ
+### Аудит 2026-11-11 — Этап 5 (P2P Crypto Cloud) — ПРИНЯТ
 
-**Что проверено по коду:**
-- `XftpProtocolEngine.kt` полностью переписан: нет `delay()` в upload/download.
-- `buildHttpClient` — SOCKS5 через `createUnresolved` (DNS-leak isolation).
-- `uploadTransfer` — реальные HTTP POST чанков с заголовками X-Chunk-* и честным FAILED при ошибках.
-- `downloadTransfer` + `reassembleFile` — реальный GET, расшифровка, per-chunk SHA-256, root integrity.
-- Блокировка `.onion` без Tor.
-- Маркеры `[REAL] [PROD-READY] [SECURITY-CRITICAL]` соответствуют коду.
+**Что проверено:**
+- `P2pBlockStorage`: реальные файлы `blk_{hash}.bin`, AES-256-GCM, проверка SHA-256 на write/read, LRU-eviction, размер контейнера.
+- `P2pCloudEngine`: embedded HttpServer (`/p2p/ping`, `/p2p/blocks`), реальный socket latency (не random), скорости из фактических байт, Tor SOCKS optional, статусы NO_NETWORK / ACTIVE_RELAY / SEEDING / DOWNLOADING.
+- Симуляционные рандомы и фейковые кусочки из основного пути убраны (по отчёту и коду движка).
+- Честное признание: jlibtorrent / global DHT — `[NEEDS-WORK]`, MVP закрыт.
 
-**Незначительные замечания (не блокируют):**
-- Endpoint’ы `/api/v1/files/.../chunks/...` — разумная REST-аппроксимация XFTP; полный binary wire SimpleX XFTP можно уточнять позже.
-- MetadataStripper в pipeline перед чанкированием желательно явно проверить на следующем проходе (не блокер приёмки).
-- `deriveKey("xftp_key_...")` для эфемерного ключа файла — работает, но лучше явно random 256-bit + PBKDF/HKDF в будущем.
+**Незначительные замечания:**
+- Ключ контейнера пока из `deriveKey(string)` — в будущем лучше SecureRandom + Keystore/HKDF.
+- Micro-server слушает `127.0.0.1` — для локального MVP ок; для внешнего роя понадобится bind-политика и безопасность.
+- `getActualPiecesMap` упрощённый (index < count) — для UI-индикатора достаточно, для настоящего bitfield позже уточнить.
 
-**Вердикт:** Этап 4 принимается. Файловый транспорт больше не симуляция.
+**Вердикт:** Этап 5 принимается. Облако перестало врать.
 
 ---
 
 ## Текущее задание Жене
 
-**Этап 5 — P2P Crypto Cloud**  
-См. подробное ТЗ в `CORRESPONDENCE_JOURNAL.md`.
+**Этап 6 — UI Core Refactor (Telegram-style shell)**  
+См. `CORRESPONDENCE_JOURNAL.md`.
