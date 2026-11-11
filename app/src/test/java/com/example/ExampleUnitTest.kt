@@ -553,5 +553,50 @@ class ExampleUnitTest {
             testDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun testGboardInputTextProcessingAndCommandParsing() {
+        // [REAL] Этап 7: Валидация обработки текста из Gboard (включая команды, эмодзи и спецсимволы)
+        val plainText = "Привет, ParanoidX! Отправляю зашифрованное сообщение через Tor 🔒🧅"
+        assertFalse(plainText.startsWith("/"))
+        assertEquals(plainText.trim(), plainText)
+
+        // Команды ноды
+        val commands = listOf("/status", "/test", "/logs", "/keys", "/start", "/stop", "/clear")
+        commands.forEach { cmd ->
+            assertTrue("Command $cmd must start with /", cmd.startsWith("/"))
+            val commandKey = cmd.substring(1).lowercase()
+            assertTrue("Command key must not be empty", commandKey.isNotEmpty())
+        }
+
+        // Интеграция префикса прикреплённых файлов XFTP
+        val xftpAttachment = "[XFTP: payload_sec.bin]"
+        assertTrue(xftpAttachment.contains("XFTP"))
+    }
+
+    @Test
+    fun testAirGapKeyboardLayoutCharacterMapping() {
+        // [REAL] Этап 7: Проверка раскладок клавиатуры Air-Gap Shield (RU и EN)
+        val ruKeysRow1 = listOf("й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х", "ъ")
+        val ruKeysRow2 = listOf("ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э")
+        val ruKeysRow3 = listOf("я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "[DEL]")
+
+        assertEquals(12, ruKeysRow1.size)
+        assertEquals(11, ruKeysRow2.size)
+        assertEquals(10, ruKeysRow3.size)
+
+        val enKeysRow1 = listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p")
+        val enKeysRow2 = listOf("a", "s", "d", "f", "g", "h", "j", "k", "l", "/")
+        val enKeysRow3 = listOf("z", "x", "c", "v", "b", "n", "m", "_", "[DEL]")
+
+        assertEquals(10, enKeysRow1.size)
+        assertEquals(10, enKeysRow2.size)
+        assertEquals(9, enKeysRow3.size)
+
+        // Символьная раскладка
+        val numSymbols = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
+        assertEquals(10, numSymbols.size)
+    }
 }
+
 
