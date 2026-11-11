@@ -720,7 +720,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
 
                                     Spacer(modifier = Modifier.height(6.dp))
                                     Text("Relay: ${queue.serverHost}", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
-                                    Text("Messages: ${queue.messageCount} | Ratchet Index: #${queue.messageCount}", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text("Status: ${queue.lastDeliveryStatus} | Messages: ${queue.messageCount}", fontSize = 10.sp, color = if (queue.lastDeliveryStatus == "DELIVERED" || queue.lastDeliveryStatus == "REGISTERED") Color(0xFF00E676) else MaterialTheme.colorScheme.primary)
 
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Row(
@@ -769,7 +769,26 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                         Text("${server.address}:${server.port} | Onion: ${server.isOnion}", fontSize = 9.sp, color = MaterialTheme.colorScheme.outline)
                                     }
                                 }
-                                Text("${server.pingMs}ms", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Badge(containerColor = when (server.status) {
+                                        "ONLINE" -> Color(0xFF00E676)
+                                        "ERROR" -> MaterialTheme.colorScheme.error
+                                        else -> MaterialTheme.colorScheme.outline
+                                    }) {
+                                        Text(server.status, fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    if (server.pingMs > 0) {
+                                        Text("${server.pingMs}ms", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color(0xFF00E676))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    IconButton(
+                                        onClick = { viewModel.pingSmpRelay(server) },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = "Ping Relay", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
                             }
                         }
                     }

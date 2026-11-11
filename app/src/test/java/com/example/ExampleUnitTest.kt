@@ -5,6 +5,8 @@ import com.example.data.security.CryptoUtils
 import com.example.data.security.DbEncryptionManager
 import com.example.data.security.MetadataStripper
 import com.example.data.security.Socks5ProxyClient
+import com.example.network.smp.SmpProtocolEngine
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -217,6 +219,97 @@ class ExampleUnitTest {
         assertEquals(1, capturedAtyps.size)
         assertEquals("ATYP must be 0x03 DOMAINNAME to guarantee DNS Leak isolation", 0x03, capturedAtyps[0])
         assertEquals("Target onion address must be forwarded verbatim to proxy without local resolution", target, capturedDomains[0])
+    }
+
+    @Test
+    fun testSmpProtocolRealNetworkTransportAndHonestErrors() = runBlocking {
+        // 1. Setup local mock SMP HTTP relay using JDK HttpServer
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        val port = server.address.port
+        val deliveredEnvelopes = mutableListOf<String>()
+
+        server.createContext("/api/v1/queues") { exchange ->
+            if (exchange.requestMethod == "POST") {
+                val path = exchange.requestURI.path
+                if (path.endsWith("/messages")) {
+                    // Message send endpoint
+                    val body = exchange.requestBody.bufferedReader().readText()
+                    deliveredEnvelopes.add(body)
+                    val responseBytes = """{"status":"DELIVERED","receipt":12345678}""".toByteArray()
+                    exchange.responseHeaders.set("Content-Type", "application/json")
+                    exchange.sendResponseHeaders(200, responseBytes.size.toLong())
+                    exchange.responseBody.write(responseBytes)
+                    exchange.responseBody.close()
+                } else {
+                    // Queue creation endpoint
+                    val responseBytes = """{"status":"OK","queueId":"test_q_123"}""".toByteArray()
+                    exchange.responseHeaders.set("Content-Type", "application/json")
+                    exchange.sendResponseHeaders(200, responseBytes.size.toLong())
+                    exchange.responseBody.write(responseBytes)
+                    exchange.responseBody.close()
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1)
+            }
+        }
+        server.start()
+
+        try {
+            // 2. Test Real Queue Registration on relay
+            val queue = SmpProtocolEngine.registerQueueOnRelay("127.0.0.1", port, "SENDER", useTorProxy = false)
+            assertEquals("REGISTERED", queue.lastDeliveryStatus)
+
+            // 3. Test Real Envelope Transmission (E2E encryption + HTTP POST)
+            val sendSuccess = SmpProtocolEngine.sendSmpEnvelope(
+                targetQueue = queue,
+                plaintextMessage = "Top-Secret-ParanoidX-Message-2026",
+                ratchetIndex = 1,
+                useTorProxy = false
+            )
+            assertTrue("Sending SMP envelope to running relay must succeed", sendSuccess)
+            assertEquals(1, deliveredEnvelopes.size)
+            assertTrue("Wire payload must contain encrypted content", deliveredEnvelopes[0].contains("payload"))
+            assertEquals(1, queue.messageCount)
+            assertEquals("DELIVERED", queue.lastDeliveryStatus)
+
+            // 4. Test Honest Error Handling: Unreachable host/port must FAIL honestly without fake success
+            val unreachableQueue = SmpProtocolEngine.SmpQueue(
+                queueId = "q_offline",
+                serverHost = "127.0.0.1",
+                serverPort = 64999, // Nothing running on this port
+                role = "SENDER",
+                readToken = "rt_fake",
+                writeToken = "wt_fake"
+            )
+            val offlineResult = SmpProtocolEngine.sendSmpEnvelope(
+                targetQueue = unreachableQueue,
+                plaintextMessage = "Should fail",
+                ratchetIndex = 2,
+                useTorProxy = false
+            )
+            assertFalse("Delivery to offline port must honestly return false", offlineResult)
+            assertEquals("IO_ERROR", unreachableQueue.lastDeliveryStatus)
+
+            // 5. Test Onion enforcement: sending to .onion without Tor must be rejected
+            val onionQueue = SmpProtocolEngine.SmpQueue(
+                queueId = "q_onion",
+                serverHost = "secretnode12345.onion",
+                serverPort = 443,
+                role = "SENDER",
+                readToken = "rt_onion",
+                writeToken = "wt_onion"
+            )
+            val onionWithoutTorResult = SmpProtocolEngine.sendSmpEnvelope(
+                targetQueue = onionQueue,
+                plaintextMessage = "Onion test",
+                ratchetIndex = 3,
+                useTorProxy = false
+            )
+            assertFalse("Onion delivery without Tor must be strictly blocked", onionWithoutTorResult)
+            assertEquals("TOR_REQUIRED", onionQueue.lastDeliveryStatus)
+        } finally {
+            server.stop(0)
+        }
     }
 }
 

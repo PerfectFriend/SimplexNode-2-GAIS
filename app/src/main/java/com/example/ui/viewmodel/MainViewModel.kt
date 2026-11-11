@@ -1742,8 +1742,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val smpLogs: StateFlow<List<String>> = SmpProtocolEngine.smpLogs
 
     fun createSmpQueue(serverHost: String, role: String) {
-        SmpProtocolEngine.createUnidirectionalQueue(serverHost, role)
-        addSystemLog("SMP_QUEUE", "Created $role queue on $serverHost", "SUCCESS")
+        viewModelScope.launch {
+            val useTor = _torEnabled.value && _torStatus.value == "CONNECTED"
+            val queue = SmpProtocolEngine.registerQueueOnRelay(serverHost, 443, role, useTor)
+            addSystemLog("SMP_QUEUE", "Registered $role queue ${queue.queueId.take(8)} on $serverHost (Status: ${queue.lastDeliveryStatus})", "SUCCESS")
+        }
     }
 
     fun deleteSmpQueue(queueId: String) {
@@ -1753,14 +1756,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendSmpEnvelope(targetQueue: SmpProtocolEngine.SmpQueue, messageText: String) {
         viewModelScope.launch {
+            val useTor = _torEnabled.value && _torStatus.value == "CONNECTED"
             val success = SmpProtocolEngine.sendSmpEnvelope(
                 targetQueue = targetQueue,
                 plaintextMessage = messageText,
                 ratchetIndex = targetQueue.messageCount + 1,
-                useTorProxy = true
+                useTorProxy = useTor
             )
             if (success) {
-                addSystemLog("SMP_SEND", "SMP packet delivered to queue ${targetQueue.queueId.take(8)}", "SUCCESS")
+                addSystemLog("SMP_SEND", "SMP envelope delivered to queue ${targetQueue.queueId.take(8)} on ${targetQueue.serverHost}", "SUCCESS")
+            } else {
+                addSystemLog("SMP_SEND", "Failed to deliver envelope to ${targetQueue.serverHost} (Status: ${targetQueue.lastDeliveryStatus})", "FAILED")
+            }
+        }
+    }
+
+    fun pingSmpRelay(serverNode: SmpProtocolEngine.SmpServerNode) {
+        viewModelScope.launch {
+            val useTor = _torEnabled.value && _torStatus.value == "CONNECTED"
+            val (success, rtt) = SmpProtocolEngine.pingRelay(serverNode, useTor)
+            if (success) {
+                addSystemLog("SMP_PING", "Relay ${serverNode.name} online (${rtt}ms)", "SUCCESS")
+            } else {
+                addSystemLog("SMP_PING", "Relay ${serverNode.name} unreachable", "FAILED")
             }
         }
     }
