@@ -1798,9 +1798,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun uploadXftpTransfer(manifest: XftpProtocolEngine.XftpTransferManifest) {
         viewModelScope.launch {
-            addSystemLog("XFTP_UPLOAD", "Broadcasting XFTP chunks for ${manifest.fileName}...", "PENDING")
-            XftpProtocolEngine.uploadTransfer(manifest) { }
-            addSystemLog("XFTP_UPLOAD", "XFTP broadcast completed: ${manifest.fileName}", "SUCCESS")
+            val useTor = _torEnabled.value && _torStatus.value == "CONNECTED"
+            addSystemLog("XFTP_UPLOAD", "Transmitting XFTP chunks for ${manifest.fileName} via ${if (useTor) "Tor SOCKS5" else "Direct"}...", "PENDING")
+            val success = XftpProtocolEngine.uploadTransfer(manifest, useTor) { }
+            if (success) {
+                addSystemLog("XFTP_UPLOAD", "XFTP transmission succeeded: ${manifest.fileName}", "SUCCESS")
+            } else {
+                addSystemLog("XFTP_UPLOAD", "XFTP upload failed for ${manifest.fileName} (Status: ${manifest.status})", "FAILED")
+            }
         }
     }
 

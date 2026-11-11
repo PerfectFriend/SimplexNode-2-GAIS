@@ -6,6 +6,7 @@ import com.example.data.security.DbEncryptionManager
 import com.example.data.security.MetadataStripper
 import com.example.data.security.Socks5ProxyClient
 import com.example.network.smp.SmpProtocolEngine
+import com.example.network.xftp.XftpProtocolEngine
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -307,6 +308,112 @@ class ExampleUnitTest {
             )
             assertFalse("Onion delivery without Tor must be strictly blocked", onionWithoutTorResult)
             assertEquals("TOR_REQUIRED", onionQueue.lastDeliveryStatus)
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun testRealXftpChunkingUploadDownloadAndReassembly() = runBlocking {
+        // 1. Generate 150 KB test payload (requires 3 chunks: 64KB + 64KB + 22KB)
+        val payloadSize = 150 * 1024
+        val testPayload = ByteArray(payloadSize) { idx -> (idx % 256).toByte() }
+        val fileName = "paranoidx_classified_dossier.bin"
+
+        // 2. Setup mock XFTP relay server on localhost
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        val port = server.address.port
+        val storedChunks = java.util.concurrent.ConcurrentHashMap<Int, ByteArray>()
+        val receivedHeaders = java.util.concurrent.ConcurrentHashMap<Int, String>()
+
+        server.createContext("/api/v1/files") { exchange ->
+            val path = exchange.requestURI.path
+            // Path: /api/v1/files/{transferId}/chunks/{chunkIndex}
+            val chunkIndex = path.substringAfterLast("/").toIntOrNull() ?: 0
+
+            when (exchange.requestMethod) {
+                "POST" -> {
+                    val inputBytes = exchange.requestBody.readBytes()
+                    storedChunks[chunkIndex] = inputBytes
+                    val hashHeader = exchange.requestHeaders.getFirst("X-Chunk-Hash") ?: ""
+                    receivedHeaders[chunkIndex] = hashHeader
+                    exchange.sendResponseHeaders(200, 0)
+                    exchange.responseBody.close()
+                }
+                "GET" -> {
+                    val chunkData = storedChunks[chunkIndex]
+                    if (chunkData != null) {
+                        exchange.sendResponseHeaders(200, chunkData.size.toLong())
+                        exchange.responseBody.write(chunkData)
+                        exchange.responseBody.close()
+                    } else {
+                        exchange.sendResponseHeaders(404, -1)
+                    }
+                }
+                else -> exchange.sendResponseHeaders(405, -1)
+            }
+        }
+        server.start()
+
+        try {
+            // 3. Create real XFTP chunked manifest
+            val manifest = XftpProtocolEngine.createChunkedTransfer(
+                fileName = fileName,
+                fileBytes = testPayload,
+                mimeType = "application/octet-stream",
+                serverEndpoint = "127.0.0.1",
+                serverPort = port
+            )
+
+            assertEquals(3, manifest.totalChunks)
+            assertEquals(3, manifest.chunks.size)
+            assertEquals(64 * 1024, manifest.chunks[0].size)
+            assertEquals(64 * 1024, manifest.chunks[1].size)
+            assertEquals(22 * 1024, manifest.chunks[2].size)
+            assertNotNull(manifest.rootHash)
+            assertTrue(manifest.rootHash.length == 64) // SHA-256 hex string
+
+            // 4. Test Real Upload over HTTP
+            var reportedProgress = 0f
+            val uploadSuccess = XftpProtocolEngine.uploadTransfer(manifest, useTorProxy = false) { prog ->
+                reportedProgress = prog
+            }
+
+            assertTrue("Upload of all 3 chunks must succeed", uploadSuccess)
+            assertEquals("COMPLETED", manifest.status)
+            assertEquals(1.0f, reportedProgress, 0.01f)
+            assertEquals(3, storedChunks.size)
+            for (i in 0 until 3) {
+                assertEquals(manifest.chunks[i].sha256Hash, receivedHeaders[i])
+            }
+
+            // 5. Test Real Download and Reassembly
+            val downloadedBytes = XftpProtocolEngine.downloadTransfer(manifest, useTorProxy = false)
+            assertNotNull("Reassembled file must not be null", downloadedBytes)
+            assertEquals(payloadSize, downloadedBytes!!.size)
+            assertArrayEquals("Decrypted and reassembled payload must match original byte-for-byte", testPayload, downloadedBytes)
+
+            // 6. Test Honest Error Handling: Unreachable relay port
+            val failedManifest = XftpProtocolEngine.createChunkedTransfer(
+                fileName = "fail.bin",
+                fileBytes = byteArrayOf(1, 2, 3),
+                serverEndpoint = "127.0.0.1",
+                serverPort = 64998 // offline
+            )
+            val failedResult = XftpProtocolEngine.uploadTransfer(failedManifest, useTorProxy = false)
+            assertFalse("Upload to offline relay must fail honestly without delay simulation", failedResult)
+            assertEquals("FAILED", failedManifest.status)
+
+            // 7. Test Onion without Tor blocking
+            val onionManifest = XftpProtocolEngine.createChunkedTransfer(
+                fileName = "onion_file.bin",
+                fileBytes = byteArrayOf(4, 5, 6),
+                serverEndpoint = "xftpnode12345.onion",
+                serverPort = 443
+            )
+            val onionResult = XftpProtocolEngine.uploadTransfer(onionManifest, useTorProxy = false)
+            assertFalse("Upload to .onion without Tor must be blocked", onionResult)
+            assertEquals("FAILED", onionManifest.status)
         } finally {
             server.stop(0)
         }
