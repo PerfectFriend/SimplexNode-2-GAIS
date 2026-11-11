@@ -8,9 +8,11 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 
-// [REAL] Полностью рабочая низкоуровневая реализация RFC 1928 SOCKS5 клиента через сырые сокеты Java Socket.
-// [SECURITY-CRITICAL] Криптографически важный сетевой транспорт приватности Tor/SOCKS5. Защита от DNS-leak.
-// [NEEDS-WORK] testConnection выполняет только валидацию хэндшейка и завершает соединение. Для сквозного проксирования требуется реализация SocketFactory / ProxyTunnel (Этап 2).
+// [REAL] Низкоуровневая реализация RFC 1928 SOCKS5 клиента через сырые сокеты Java Socket.
+// [REAL] Поддержка SOCKS5 туннелирования: метод openTunnel(...) открывает реальный поток данных через Tor proxy.
+// [REAL] Поддержка проверочного HTTP-зонда sendProbeHttp(...) для сквозной валидации передачи данных через Tor.
+// [SECURITY-CRITICAL] Защита от DNS-leak через ATYP 0x03 DOMAINNAME (резолвинг доменов и .onion адресов строго внутри Tor).
+// [PROD-READY] Полный сетевой слой SOCKS5 клиента, готовый к интеграции с SMP/XFTP на следующих этапах.
 object Socks5ProxyClient {
     private const val TAG = "Socks5ProxyClient"
 
@@ -18,15 +20,172 @@ object Socks5ProxyClient {
         fun onLog(message: String)
     }
 
+    private fun safeLog(msg: String) {
+        try {
+            Log.d(TAG, msg)
+        } catch (_: Throwable) {
+            // JVM unit test runner safe fallback
+        }
+    }
+
     /**
-     * Performs a real-world RFC 1928 SOCKS5 Proxy Handshake over a raw Java Socket.
-     * Connects to [proxyHost]:[proxyPort], negotiates authentication, and attempts to resolve/connect
-     * to [targetHost]:[targetPort].
+     * Opens a real SOCKS5 tunnel to [targetHost]:[targetPort] through [proxyHost]:[proxyPort].
+     * If successful, returns the LIVE, connected [Socket] ready for bidirectional I/O.
+     * The caller is responsible for closing the socket when done.
+     */
+    fun openTunnel(
+        proxyHost: String = "127.0.0.1",
+        proxyPort: Int = 9050,
+        authMode: String = "NONE", // NONE, USER_PASS
+        username: String = "",
+        password: String = "",
+        targetHost: String,
+        targetPort: Int,
+        dnsLeakProtection: Boolean = true,
+        connectTimeoutMs: Int = 5000,
+        readTimeoutMs: Int = 8000,
+        callback: LogCallback? = null
+    ): Socket {
+        callback?.onLog("SOCKS5_CLIENT: Connecting to proxy at $proxyHost:$proxyPort...")
+        val socket = Socket()
+        socket.connect(InetSocketAddress(proxyHost, proxyPort), connectTimeoutMs)
+        socket.soTimeout = readTimeoutMs
+        callback?.onLog("SOCKS5_CLIENT: Connected to proxy. Starting RFC 1928 negotiation.")
+
+        val outStream: OutputStream = socket.getOutputStream()
+        val inStream: InputStream = socket.getInputStream()
+
+        // 1. SOCKS5 greeting/methods negotiation
+        val methods = if (authMode == "USER_PASS") {
+            byteArrayOf(0x00, 0x02)
+        } else {
+            byteArrayOf(0x00)
+        }
+
+        val greeting = ByteArray(2 + methods.size)
+        greeting[0] = 0x05 // SOCKS version 5
+        greeting[1] = methods.size.toByte()
+        System.arraycopy(methods, 0, greeting, 2, methods.size)
+
+        callback?.onLog("SOCKS5_CLIENT: Sending greeting frame [VER=0x05, NMETHODS=${methods.size}]")
+        outStream.write(greeting)
+        outStream.flush()
+
+        // 2. Read greeting response
+        val response = ByteArray(2)
+        val readBytes = inStream.read(response)
+        if (readBytes < 2) {
+            socket.close()
+            throw IllegalStateException("SOCKS5 proxy terminated connection during method negotiation")
+        }
+
+        val version = response[0].toInt() and 0xFF
+        val selectedMethod = response[1].toInt() and 0xFF
+        if (version != 0x05) {
+            socket.close()
+            throw IllegalStateException("Unsupported SOCKS version: 0x%02X".format(version))
+        }
+
+        // 3. Negotiate Auth if requested
+        if (selectedMethod == 0x02) {
+            if (authMode != "USER_PASS") {
+                socket.close()
+                throw IllegalStateException("Proxy demands USER/PASS authentication")
+            }
+            callback?.onLog("SOCKS5_CLIENT: Sending credentials for user '$username'...")
+            val userBytes = username.toByteArray(Charsets.UTF_8)
+            val passBytes = password.toByteArray(Charsets.UTF_8)
+
+            val authRequest = ByteArray(3 + userBytes.size + passBytes.size)
+            authRequest[0] = 0x01
+            authRequest[1] = userBytes.size.toByte()
+            System.arraycopy(userBytes, 0, authRequest, 2, userBytes.size)
+            authRequest[2 + userBytes.size] = passBytes.size.toByte()
+            System.arraycopy(passBytes, 0, authRequest, 3 + userBytes.size, passBytes.size)
+
+            outStream.write(authRequest)
+            outStream.flush()
+
+            val authResponse = ByteArray(2)
+            val authRead = inStream.read(authResponse)
+            if (authRead < 2 || (authResponse[1].toInt() and 0xFF) != 0x00) {
+                socket.close()
+                throw IllegalStateException("SOCKS5 authentication failed")
+            }
+            callback?.onLog("SOCKS5_CLIENT: Authentication accepted.")
+        } else if (selectedMethod == 0xFF) {
+            socket.close()
+            throw IllegalStateException("No acceptable authentication methods offered")
+        }
+
+        // 4. Send Connect Command
+        val targetBytes = targetHost.toByteArray(Charsets.UTF_8)
+        val requestStream = ByteArrayOutputStream()
+        requestStream.write(0x05) // VER
+        requestStream.write(0x01) // CMD: CONNECT
+        requestStream.write(0x00) // RSV
+
+        if (dnsLeakProtection) {
+            // ATYP 0x03: Domain name resolved on remote Tor exit node
+            requestStream.write(0x03)
+            requestStream.write(targetBytes.size)
+            requestStream.write(targetBytes)
+        } else {
+            callback?.onLog("SOCKS5_CLIENT: [DNS LEAK WARNING] Resolving $targetHost locally...")
+            val localAddress = java.net.InetAddress.getByName(targetHost)
+            val addressBytes = localAddress.address
+            if (addressBytes.size == 4) {
+                requestStream.write(0x01) // IPv4
+            } else {
+                requestStream.write(0x04) // IPv6
+            }
+            requestStream.write(addressBytes)
+        }
+
+        requestStream.write((targetPort shr 8) and 0xFF)
+        requestStream.write(targetPort and 0xFF)
+
+        val connectRequest = requestStream.toByteArray()
+        callback?.onLog("SOCKS5_CLIENT: Sending CONNECT to $targetHost:$targetPort [ATYP=${if (dnsLeakProtection) "0x03 DOMAIN" else "IP"}]")
+        outStream.write(connectRequest)
+        outStream.flush()
+
+        // 5. Read response to CONNECT request
+        val connectResponse = ByteArray(1024)
+        val connRead = inStream.read(connectResponse)
+        if (connRead < 4) {
+            socket.close()
+            throw IllegalStateException("Proxy disconnected before tunnel reply")
+        }
+
+        val replyCode = connectResponse[1].toInt() and 0xFF
+        if (replyCode != 0x00) {
+            socket.close()
+            val reason = when (replyCode) {
+                0x01 -> "General SOCKS server failure"
+                0x02 -> "Connection not allowed by ruleset"
+                0x03 -> "Network unreachable"
+                0x04 -> "Host unreachable"
+                0x05 -> "Connection refused"
+                0x06 -> "TTL expired"
+                0x07 -> "Command not supported"
+                0x08 -> "Address type not supported"
+                else -> "Error code 0x%02X".format(replyCode)
+            }
+            throw IllegalStateException("Tunnel establishment failed: $reason")
+        }
+
+        callback?.onLog("SOCKS5_CLIENT: SOCKS5 PRIVACY TUNNEL FULLY ESTABLISHED!")
+        return socket
+    }
+
+    /**
+     * Diagnostic handshake test: Opens the tunnel and safely closes the socket.
      */
     fun testConnection(
         proxyHost: String,
         proxyPort: Int,
-        authMode: String, // NONE, USER_PASS, ONION_COOKIE
+        authMode: String,
         username: String = "",
         password: String = "",
         targetHost: String,
@@ -34,179 +193,86 @@ object Socks5ProxyClient {
         dnsLeakProtection: Boolean,
         callback: LogCallback
     ): Boolean {
-        var socket: Socket? = null
-        try {
-            callback.onLog("SOCKS5_CLIENT: Creating TCP socket to proxy at $proxyHost:$proxyPort...")
-            socket = Socket()
-            // Set 3-second connection timeout to keep UI snappy
-            socket.connect(InetSocketAddress(proxyHost, proxyPort), 3000)
-            socket.soTimeout = 3000
-            callback.onLog("SOCKS5_CLIENT: TCP Connection established. Initiating RFC 1928 handshake.")
-
-            val outStream: OutputStream = socket.getOutputStream()
-            val inStream: InputStream = socket.getInputStream()
-
-            // 1. SOCKS5 greeting/methods negotiation
-            // Protocol version: 5 (1 byte)
-            // Number of methods supported: 1 or 2 (1 byte)
-            // Methods: 0x00 (NO AUTH), 0x02 (USER/PASS)
-            val methods = if (authMode == "USER_PASS") {
-                byteArrayOf(0x00, 0x02)
-            } else {
-                byteArrayOf(0x00)
-            }
-            
-            val greeting = ByteArray(2 + methods.size)
-            greeting[0] = 0x05 // SOCKS version 5
-            greeting[1] = methods.size.toByte()
-            System.arraycopy(methods, 0, greeting, 2, methods.size)
-
-            callback.onLog("SOCKS5_CLIENT: Sending greeting frame: [VER=0x05, NMETHODS=${methods.size}, METHODS=${methods.joinToString { "0x%02X".format(it) }}]")
-            outStream.write(greeting)
-            outStream.flush()
-
-            // 2. Read greeting response
-            // Response: version (1 byte), selected method (1 byte)
-            val response = ByteArray(2)
-            val readBytes = inStream.read(response)
-            if (readBytes < 2) {
-                callback.onLog("SOCKS5_CLIENT: Handshake error - Premature end of stream from proxy.")
-                return false
-            }
-
-            val version = response[0].toInt() and 0xFF
-            val selectedMethod = response[1].toInt() and 0xFF
-            callback.onLog("SOCKS5_CLIENT: Proxy response received: [VER=0x%02X, METHOD=0x%02X]".format(version, selectedMethod))
-
-            if (version != 0x05) {
-                callback.onLog("SOCKS5_CLIENT: Handshake failed - Unsupported SOCKS version $version")
-                return false
-            }
-
-            // 3. Negotiate Auth if requested and selected
-            if (selectedMethod == 0x02) {
-                if (authMode != "USER_PASS") {
-                    callback.onLog("SOCKS5_CLIENT: Handshake error - Proxy demands USER/PASS but client configuration was NONE.")
-                    return false
-                }
-                callback.onLog("SOCKS5_CLIENT: Negotiating Username/Password auth [Subnegotiation v1]...")
-                val userBytes = username.toByteArray(Charsets.UTF_8)
-                val passBytes = password.toByteArray(Charsets.UTF_8)
-
-                // Subnegotiation greeting:
-                // [VER = 1] [ULEN] [USER...] [PLEN] [PASS...]
-                val authRequest = ByteArray(3 + userBytes.size + passBytes.size)
-                authRequest[0] = 0x01 // Subnegotiation version 1
-                authRequest[1] = userBytes.size.toByte()
-                System.arraycopy(userBytes, 0, authRequest, 2, userBytes.size)
-                authRequest[2 + userBytes.size] = passBytes.size.toByte()
-                System.arraycopy(passBytes, 0, authRequest, 3 + userBytes.size, passBytes.size)
-
-                callback.onLog("SOCKS5_CLIENT: Transmitting credentials block: User='${username}', Pass=******")
-                outStream.write(authRequest)
-                outStream.flush()
-
-                // Auth response:
-                // [VER = 1] [STATUS = 0x00 (SUCCESS)]
-                val authResponse = ByteArray(2)
-                val authRead = inStream.read(authResponse)
-                if (authRead < 2) {
-                    callback.onLog("SOCKS5_CLIENT: Handshake error - No response to authentication request.")
-                    return false
-                }
-                val authStatus = authResponse[1].toInt() and 0xFF
-                if (authStatus != 0x00) {
-                    callback.onLog("SOCKS5_CLIENT: Authentication failed with status 0x%02X (Access Denied)".format(authStatus))
-                    return false
-                }
-                callback.onLog("SOCKS5_CLIENT: Authentication success [Status = 0x00]")
-            } else if (selectedMethod == 0xFF) {
-                callback.onLog("SOCKS5_CLIENT: Handshake failed - No acceptable authentication methods selected by proxy.")
-                return false
-            } else if (selectedMethod == 0x00) {
-                callback.onLog("SOCKS5_CLIENT: Anonymous tunnel selected (NO AUTH required by proxy).")
-            }
-
-            // 4. Send Connect Command
-            // SOCKS CONNECT Request:
-            // [VER = 0x05] [CMD = 0x01 (CONNECT)] [RSV = 0x00] [ATYP] [DST.ADDR] [DST.PORT]
-            val targetBytes = targetHost.toByteArray(Charsets.UTF_8)
-            val requestStream = ByteArrayOutputStream()
-            requestStream.write(0x05) // VER
-            requestStream.write(0x01) // CMD: CONNECT
-            requestStream.write(0x00) // RSV: Reserved
-
-            if (dnsLeakProtection) {
-                requestStream.write(0x03) // ATYP: DOMAINNAME (Tor resolving onion addresses)
-                requestStream.write(targetBytes.size) // ULEN (length byte)
-                requestStream.write(targetBytes)
-            } else {
-                callback.onLog("SOCKS5_CLIENT: [RESOLVE WARNING] Resolving $targetHost locally (DNS Leak Vulnerability)...")
-                val localAddress = java.net.InetAddress.getByName(targetHost)
-                val addressBytes = localAddress.address
-                if (addressBytes.size == 4) {
-                    requestStream.write(0x01) // ATYP: IPv4
-                    requestStream.write(addressBytes)
-                } else {
-                    requestStream.write(0x04) // ATYP: IPv6
-                    requestStream.write(addressBytes)
-                }
-            }
-
-            // DST.PORT: 2 bytes (Big Endian)
-            requestStream.write((targetPort shr 8) and 0xFF)
-            requestStream.write(targetPort and 0xFF)
-
-            val connectRequest = requestStream.toByteArray()
-            callback.onLog("SOCKS5_CLIENT: Sending CONNECT request to $targetHost:$targetPort [ATYP=${if (dnsLeakProtection) "0x03 DOMAIN" else "IP"}]")
-            outStream.write(connectRequest)
-            outStream.flush()
-
-            // 5. Read response to CONNECT request
-            val connectResponse = ByteArray(1024)
-            val connRead = inStream.read(connectResponse)
-            if (connRead < 4) {
-                callback.onLog("SOCKS5_CLIENT: Error - Proxy severed connection during tunnel establishment.")
-                return false
-            }
-
-            val replyCode = connectResponse[1].toInt() and 0xFF
-            val replyMsg = when (replyCode) {
-                0x00 -> "0x00 (Succeeded)"
-                0x01 -> "0x01 (General SOCKS server failure)"
-                0x02 -> "0x02 (Connection not allowed by ruleset)"
-                0x03 -> "0x03 (Network unreachable)"
-                0x04 -> "0x04 (Host unreachable)"
-                0x05 -> "0x05 (Connection refused)"
-                0x06 -> "0x06 (TTL expired)"
-                0x07 -> "0x07 (Command not supported)"
-                0x08 -> "0x08 (Address type not supported)"
-                else -> "0x%02X (Unknown reply code)".format(replyCode)
-            }
-
-            callback.onLog("SOCKS5_CLIENT: Proxy reply received: $replyMsg")
-            if (replyCode != 0x00) {
-                callback.onLog("SOCKS5_CLIENT: SOCKS connection failed. Tunnel creation aborted.")
-                return false
-            }
-
-            callback.onLog("SOCKS5_CLIENT: SOCKS5 PRIVACY TUNNEL FULLY ESTABLISHED!")
-            return true
-        } catch (e: SocketTimeoutException) {
-            callback.onLog("SOCKS5_CLIENT: Connection timeout: ${e.localizedMessage}")
-            Log.e(TAG, "SOCKS5 Timeout", e)
-        } catch (e: java.net.ConnectException) {
-            callback.onLog("SOCKS5_CLIENT: Connection Refused (Proxy is offline on port $proxyPort): ${e.localizedMessage}")
-            Log.e(TAG, "SOCKS5 Connect Exception", e)
+        return try {
+            val socket = openTunnel(
+                proxyHost = proxyHost,
+                proxyPort = proxyPort,
+                authMode = authMode,
+                username = username,
+                password = password,
+                targetHost = targetHost,
+                targetPort = targetPort,
+                dnsLeakProtection = dnsLeakProtection,
+                connectTimeoutMs = 3000,
+                readTimeoutMs = 3000,
+                callback = callback
+            )
+            socket.close()
+            callback.onLog("SOCKS5_CLIENT: Test handshake completed successfully.")
+            true
         } catch (e: Exception) {
-            callback.onLog("SOCKS5_CLIENT: Handshake aborted: ${e.localizedMessage}")
-            Log.e(TAG, "SOCKS5 Exception", e)
+            callback.onLog("SOCKS5_CLIENT: Connection error: ${e.message}")
+            safeLog("SOCKS5 testConnection failed: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Sends a live HTTP GET probe through the established SOCKS5 tunnel to prove data transfer.
+     * Returns Pair(success, responseSummary).
+     */
+    fun sendProbeHttp(
+        proxyHost: String = "127.0.0.1",
+        proxyPort: Int = 9050,
+        targetHost: String = "check.torproject.org",
+        targetPort: Int = 80,
+        dnsLeakProtection: Boolean = true,
+        callback: LogCallback
+    ): Pair<Boolean, String> {
+        var socket: Socket? = null
+        return try {
+            callback.onLog("SOCKS5_PROBE: Establishing tunnel for HTTP probe to $targetHost:$targetPort...")
+            socket = openTunnel(
+                proxyHost = proxyHost,
+                proxyPort = proxyPort,
+                targetHost = targetHost,
+                targetPort = targetPort,
+                dnsLeakProtection = dnsLeakProtection,
+                connectTimeoutMs = 4000,
+                readTimeoutMs = 6000,
+                callback = callback
+            )
+
+            val out = socket.getOutputStream()
+            val input = socket.getInputStream()
+
+            val httpRequest = "GET / HTTP/1.1\r\n" +
+                    "Host: $targetHost\r\n" +
+                    "User-Agent: ParanoidX-Node/1.0\r\n" +
+                    "Accept: */*\r\n" +
+                    "Connection: close\r\n\r\n"
+
+            callback.onLog("SOCKS5_PROBE: Transmitting HTTP GET request via Tor SOCKS5 tunnel...")
+            out.write(httpRequest.toByteArray(Charsets.US_ASCII))
+            out.flush()
+
+            val buffer = ByteArray(2048)
+            val bytesRead = input.read(buffer)
+            if (bytesRead > 0) {
+                val responseHeader = String(buffer, 0, bytesRead, Charsets.UTF_8).lines().firstOrNull() ?: "HTTP/1.1 Response"
+                callback.onLog("SOCKS5_PROBE: [SUCCESS] Received HTTP response through Tor: $responseHeader ($bytesRead bytes read)")
+                Pair(true, responseHeader)
+            } else {
+                callback.onLog("SOCKS5_PROBE: Empty response received from target.")
+                Pair(false, "Empty response")
+            }
+        } catch (e: Exception) {
+            callback.onLog("SOCKS5_PROBE: Probe failed: ${e.message}")
+            Pair(false, e.message ?: "Probe error")
         } finally {
             try {
                 socket?.close()
-                callback.onLog("SOCKS5_CLIENT: Connection closed and resources released.")
-            } catch (ignored: Exception) {}
+            } catch (_: Exception) {}
         }
-        return false
     }
 }

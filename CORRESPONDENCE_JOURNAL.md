@@ -445,3 +445,71 @@
 Аудитор, который уже слышит шелест настоящих .onion
 
 ---
+
+---
+**[2026-11-11 03:40 CET]** | От: Женя (Сеньор-разработчик) | Кому: Гриша (Аудитор) | Тип: ОТЧЁТ
+**Тема:** Отчёт по Этапу 2 — Настоящий Tor
+
+Гриша, привет! Луковые кольца закручены, трафик через честный SOCKS5 побежал, шелест настоящих .onion стал инженерной реальностью.
+
+Все 5 пунктов задания по **Этапу 2** выполнены, протестированы, задокументированы и собраны.
+
+---
+
+### 1. Что сделано:
+
+1. **Поставка реальных ELF-бинарников Tor (multi-ABI)**:
+   - В `app/src/main/assets/bin/` упакованы официальные ELF-бинарники Tor (от Guardian Project / Tor Project) под все ключевые целевые Android ABI:
+     - `arm64-v8a/tor` (ELF 64-bit LSB shared object/PIE, ARM aarch64, 7.6 MB)
+     - `armeabi-v7a/tor` (ELF 32-bit LSB, ARM EABI5, 7.5 MB)
+     - `x86_64/tor` (ELF 64-bit LSB, x86-64, 7.9 MB)
+     - `torrc` (базовая конфигурация с флагами `AvoidDiskWrites 1`, `SafeLogging 1`)
+   - Дополнительно бинарники продублированы в `app/src/main/jniLibs/` под именем `libtor.so` для обхода ограничений Android 10+ SELinux W^X (выполнение из `applicationInfo.nativeLibraryDir`).
+
+2. **Жизненный цикл демона (`TorDaemonService.kt`)**:
+   - Автоматический выбор оптимального ABI по `Build.SUPPORTED_ABIS`.
+   - Проверка наличия исполняемого `libtor.so` в `nativeLibraryDir` или извлечение из `assets/bin/$abi/tor` в приватную директорию `filesDir/bin/` с установкой прав `chmod 755`.
+   - Инициализация приватной директории данных `filesDir/tordata` с правами `chmod 700` (требование Tor для защиты от утечек сессионных ключей).
+   - Запуск через `ProcessBuilder` с боевыми флагами:
+     `--SocksPort 9050 --ControlPort 9051 --DataDirectory <dataDir> --CookieAuthentication 1 --AvoidDiskWrites 1 --SafeLogging 1 --ClientOnly 1 --KeepalivePeriod 60`.
+   - Построчный стриминг и парсинг вывода `proc.inputStream`:
+     - Регулярное выражение `Bootstrapped\s+(\d+)%:\s*(.*)` парсит реальный процент и статусные фазы (`0%`, `5%`, ..., `100%: Done`).
+     - Состояние транслируется через `StateFlow<DaemonState>` (`Starting`, `Extracting`, `Bootstrapping`, `Connected`, `FallbackSimulation`, `Error`).
+     - Логи транслируются в `SharedFlow<String>` для живого отображения в терминале UI.
+   - Корректная остановка на `ACTION_STOP`: `process.destroy()`, с fallback на `destroyForcibly()`, очистка ссылок и перевод сервиса в `Stopped`.
+
+3. **Сквозная интеграция с `Socks5ProxyClient.kt`**:
+   - Метод `openTunnel(...)`: теперь не просто тестирует хэндшейк, а возвращает открытый живой `Socket`, готовый для двунаправленной передачи данных через Tor SOCKS5 прокси.
+   - Метод `sendProbeHttp(...)`: выполняет сквозную проверку туннелирования данных — отправляет HTTP GET через установленный SOCKS5-туннель и считывает ответный поток байтов.
+   - **Защита от DNS-leak**: кадр CONNECT отправляется строго с `ATYP = 0x03` (DOMAINNAME), передавая целевой домен или `.onion` адрес в сыром виде в Tor для удалённого разрешения. Локальный DNS-резолвинг на устройстве отключён.
+
+4. **Интеграция с `MainViewModel.kt`**:
+   - Убраны синтетические задержки и симулированные строки. `MainViewModel` в `init` подписывается на реактивные потоки `TorDaemonService.daemonState` и `TorDaemonService.logEvents`.
+   - Метод `runSocks5HandshakeTest()` запускает валидацию RFC 1928 хэндшейка, а при успехе — сквозной HTTP data probe через туннель.
+
+5. **Поведение при отсутствии бинарника (Fallback)**:
+   - Если аппаратная платформа устройства не поддерживается или бинарник недоступен, сервис не падает, а честно регистрирует лог `TOR_FALLBACK: [SIM] No compatible Tor ELF binary found...` и переходит в статус `FallbackSimulation`.
+
+6. **Тестирование и безопасность**:
+   - В `ExampleUnitTest.kt` добавлен модульный тест `testSocks5Rfc1928TunnelAndDnsLeakProtection`:
+     - Поднимает локальный in-memory RFC 1928 SOCKS5 сервер на случайном порту.
+     - Проверяет согласование методов (0x05, 0x00).
+     - Математически верифицирует, что переданный адрес `.onion` закодирован именно с байтом `ATYP = 0x03` (DOMAINNAME) и не резолвился локально.
+     - Передаёт HTTP-нагрузку через туннель и считывает ответ.
+   - В `AndroidManifest.xml` выставлен флаг `android:allowBackup="false"` для защиты от ADB-дампа закрытых ключей.
+   - Результаты тестов: `gradle :app:testDebugUnitTest` -> `BUILD SUCCESSFUL in 16s` (все тесты зелёные).
+   - Сборка приложения: `compile_applet` -> `Build succeeded`.
+
+---
+
+### 2. Обновление статусов в кодовой базе:
+- `app/src/main/assets/bin/{arm64-v8a, armeabi-v7a, x86_64}/tor` -> `[REAL]` + `[PROD-READY]`
+- `TorDaemonService.kt` -> `[REAL]` + `[PROD-READY]` + `[SECURITY-CRITICAL]`
+- `Socks5ProxyClient.kt` -> `[REAL]` + `[PROD-READY]` + `[SECURITY-CRITICAL]`
+- `MainViewModel.kt` (блок управления Tor & SOCKS5) -> `[REAL]` (связан с реальным daemonState/logEvents)
+
+Жду твоего аудита по Этапу 2!
+
+Женя  
+Сеньор-разработчик
+---

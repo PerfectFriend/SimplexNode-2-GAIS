@@ -4,6 +4,7 @@ import com.example.data.security.Bip39Utils
 import com.example.data.security.CryptoUtils
 import com.example.data.security.DbEncryptionManager
 import com.example.data.security.MetadataStripper
+import com.example.data.security.Socks5ProxyClient
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
@@ -116,4 +117,106 @@ class ExampleUnitTest {
         }
         assertEquals(1536L, parsedBytes)
     }
+
+    @Test
+    fun testSocks5Rfc1928TunnelAndDnsLeakProtection() {
+        // Spin up local ephemeral mock SOCKS5 server
+        val server = java.net.ServerSocket(0)
+        val port = server.localPort
+        val capturedDomains = mutableListOf<String>()
+        val capturedAtyps = mutableListOf<Int>()
+
+        val serverThread = Thread {
+            try {
+                val clientSocket = server.accept()
+                val input = clientSocket.getInputStream()
+                val output = clientSocket.getOutputStream()
+
+                // 1. Read Greeting: [VER, NMETHODS, METHODS...]
+                val ver = input.read()
+                assertEquals(0x05, ver)
+                val nmethods = input.read()
+                val methods = ByteArray(nmethods)
+                input.read(methods)
+                // Reply: [VER=0x05, METHOD=0x00 (NO AUTH)]
+                output.write(byteArrayOf(0x05, 0x00))
+                output.flush()
+
+                // 2. Read Request: [VER=0x05, CMD=0x01, RSV=0x00, ATYP, DST.ADDR, DST.PORT]
+                val reqVer = input.read()
+                val reqCmd = input.read()
+                val reqRsv = input.read()
+                val reqAtyp = input.read()
+                capturedAtyps.add(reqAtyp)
+
+                val domainName = if (reqAtyp == 0x03) {
+                    val len = input.read()
+                    val domainBytes = ByteArray(len)
+                    input.read(domainBytes)
+                    String(domainBytes, Charsets.UTF_8)
+                } else {
+                    val ip = ByteArray(4)
+                    input.read(ip)
+                    "ip"
+                }
+                capturedDomains.add(domainName)
+
+                // Read port (2 bytes)
+                val portHigh = input.read()
+                val portLow = input.read()
+                val targetPort = (portHigh shl 8) or portLow
+                assertEquals(80, targetPort)
+
+                // 3. Reply: [0x05, 0x00 (SUCCESS), 0x00, 0x01, 127, 0, 0, 1, 0x00, 0x50]
+                output.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x00, 0x50))
+                output.flush()
+
+                // 4. Handle HTTP probe payload
+                val buffer = ByteArray(1024)
+                val bytesRead = input.read(buffer)
+                if (bytesRead > 0) {
+                    val receivedHttp = String(buffer, 0, bytesRead, Charsets.US_ASCII)
+                    assertTrue("Must contain HTTP GET", receivedHttp.startsWith("GET / HTTP/1.1"))
+                    val httpResponse = "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nHello Tor!\n"
+                    output.write(httpResponse.toByteArray(Charsets.US_ASCII))
+                    output.flush()
+                }
+
+                clientSocket.close()
+            } catch (e: Exception) {
+                // Mock test server loop
+            } finally {
+                server.close()
+            }
+        }
+        serverThread.start()
+
+        val logs = mutableListOf<String>()
+        val callback = object : Socks5ProxyClient.LogCallback {
+            override fun onLog(message: String) {
+                logs.add(message)
+            }
+        }
+
+        // Test probe via our Socks5ProxyClient
+        val target = "sx67hg2tqp938vjk9bca1sl8zqr.onion"
+        val (success, summary) = Socks5ProxyClient.sendProbeHttp(
+            proxyHost = "127.0.0.1",
+            proxyPort = port,
+            targetHost = target,
+            targetPort = 80,
+            dnsLeakProtection = true,
+            callback = callback
+        )
+
+        serverThread.join(5000)
+
+        // Verifications
+        assertTrue("HTTP probe through SOCKS5 tunnel must succeed", success)
+        assertEquals("HTTP/1.1 200 OK", summary)
+        assertEquals(1, capturedAtyps.size)
+        assertEquals("ATYP must be 0x03 DOMAINNAME to guarantee DNS Leak isolation", 0x03, capturedAtyps[0])
+        assertEquals("Target onion address must be forwarded verbatim to proxy without local resolution", target, capturedDomains[0])
+    }
 }
+
