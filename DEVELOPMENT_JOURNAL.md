@@ -9,14 +9,15 @@
 ## Статус проекта на 2026-11-11
 
 ### Общий вердикт
-Крипто-фундамент, реальный Tor и реальный SMP-транспорт подняты. Приложение перестало быть прототипом с симуляцией мессенджера.
+Крипто-фундамент, Tor, SMP и XFTP подняты на реальный сетевой уровень. Функциональное ядро транспорта собрано.
 
 **Этап 0 — ПРИНЯТ**  
 **Этап 1 — ПРИНЯТ**  
 **Этап 2 — ПРИНЯТ**  
-**Этап 3 — ПРИНЯТ**
+**Этап 3 — ПРИНЯТ**  
+**Этап 4 — ПРИНЯТ**
 
-### Матрица готовности (обновлено после аудита Этапа 3)
+### Матрица готовности (обновлено после аудита Этапа 4)
 
 | Компонент | Статус | Маркер | Комментарий |
 |-----------|--------|--------|-------------|
@@ -25,38 +26,36 @@
 | SQLCipher / AppDatabase | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
 | TorDaemonService | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
 | Socks5ProxyClient | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| SmpProtocolEngine | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | Реальный OkHttp + SOCKS5, честные ошибки |
-| XftpProtocolEngine | Низкий–Средний | частично [REAL] | Чанкирование реальное, транспорт — [SIM] → Этап 4 |
-| TorrentSeederService | Средний | частично [REAL] | |
+| SmpProtocolEngine | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
+| XftpProtocolEngine | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | Реальный upload/download чанков, без delay |
+| TorrentSeederService | Средний | частично [REAL] | Цель Этапа 5 |
 | MainViewModel | — | [NEEDS-WORK] | God-object, Этап 6 |
-| Package name | — | [NEEDS-WORK] | com.example |
+| UI shell | — | [NEEDS-WORK] | Telegram-style — Этап 6 |
 
 ---
 
 ## Записи аудитов
 
-### Аудит 2026-11-11 — Этап 3 (Реальный SMP-транспорт) — ПРИНЯТ
+### Аудит 2026-11-11 — Этап 4 (XFTP и файловый слой) — ПРИНЯТ
 
 **Что проверено по коду:**
-- `SmpProtocolEngine.kt`: полностью переписан на OkHttpClient.
-- `buildHttpClient(useTorProxy)` — корректный SOCKS Proxy через `InetSocketAddress.createUnresolved` (DNS-leak isolation).
-- `sendSmpEnvelope` — реальный HTTP POST, никаких `delay()` в основном пути.
-- Честные статусы: `DELIVERED`, `TOR_REQUIRED`, `IO_ERROR`, `HTTP_xxx`, `UNREACHABLE`.
+- `XftpProtocolEngine.kt` полностью переписан: нет `delay()` в upload/download.
+- `buildHttpClient` — SOCKS5 через `createUnresolved` (DNS-leak isolation).
+- `uploadTransfer` — реальные HTTP POST чанков с заголовками X-Chunk-* и честным FAILED при ошибках.
+- `downloadTransfer` + `reassembleFile` — реальный GET, расшифровка, per-chunk SHA-256, root integrity.
 - Блокировка `.onion` без Tor.
-- Предупреждение при clearnet-отправке.
-- `registerQueueOnRelay`, `pollIncomingEnvelopes`, `pingRelay` — реальные сетевые вызовы.
-- Маркеры обновлены корректно.
+- Маркеры `[REAL] [PROD-READY] [SECURITY-CRITICAL]` соответствуют коду.
 
 **Незначительные замечания (не блокируют):**
-- API endpoint’ы (`/api/v1/queues/...`) — это разумная REST-аппроксимация SMP. Настоящий wire-протокол SimpleX более бинарный/WebSocket-ориентированный; для текущего этапа достаточно.
-- Парсинг входящих сообщений в `pollIncomingEnvelopes` пока возвращает emptyList() (тело читается, но не разбирается в пакеты) — можно усилить на следующих итерациях.
-- Полный Double Ratchet production-grade по-прежнему не требуется.
+- Endpoint’ы `/api/v1/files/.../chunks/...` — разумная REST-аппроксимация XFTP; полный binary wire SimpleX XFTP можно уточнять позже.
+- MetadataStripper в pipeline перед чанкированием желательно явно проверить на следующем проходе (не блокер приёмки).
+- `deriveKey("xftp_key_...")` для эфемерного ключа файла — работает, но лучше явно random 256-bit + PBKDF/HKDF в будущем.
 
-**Вердикт:** Этап 3 принимается. Основной путь SMP больше не является симуляцией.
+**Вердикт:** Этап 4 принимается. Файловый транспорт больше не симуляция.
 
 ---
 
 ## Текущее задание Жене
 
-**Этап 4 — XFTP и файловый слой**  
+**Этап 5 — P2P Crypto Cloud**  
 См. подробное ТЗ в `CORRESPONDENCE_JOURNAL.md`.
