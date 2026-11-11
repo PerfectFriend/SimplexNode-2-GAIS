@@ -1,60 +1,46 @@
 # DEVELOPMENT JOURNAL
 ## ParanoidX Node / SimplexNode-2-GAIS
 
-**Ведётся Гришей (Аудитор).**  
-Женя не редактирует этот файл напрямую.
+**Ведётся Гришей (Аудитор).**
 
 ---
 
 ## Статус проекта на 2026-11-11
 
 ### Общий вердикт
-Функциональное сетевое ядро закрыто: крипта, Tor, SMP, XFTP, P2P Crypto Cloud. Дальше — интерфейс.
+Сетевое ядро (0–5) и UI-каркас (6–7) приняты.  
+Следующий стратегический блок: **BIP-39 как корень доверия + флот нод с одного ключа**.
 
-**Этап 0 — ПРИНЯТ**  
-**Этап 1 — ПРИНЯТ**  
-**Этап 2 — ПРИНЯТ**  
-**Этап 3 — ПРИНЯТ**  
-**Этап 4 — ПРИНЯТ**  
-**Этап 5 — ПРИНЯТ**
+**Этапы 0–7 — ПРИНЯТЫ**  
+**Этап 8 — В РАБОТЕ** (BIP-39 Onboarding + Root Key Hierarchy)
 
-### Матрица готовности (обновлено после аудита Этапа 5)
+### Матрица готовности
 
-| Компонент | Статус | Маркер | Комментарий |
-|-----------|--------|--------|-------------|
-| Crypto / Vault / SQLCipher | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| Tor + SOCKS5 | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| SMP transport | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| XFTP transport | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | |
-| P2pBlockStorage | Высокий | [REAL] [PROD-READY] [SECURITY-CRITICAL] | Диск, AES-GCM, SHA-256, LRU |
-| P2pCloudEngine | Высокий | [REAL] [PROD-READY] | Micro-server, реальный latency/speed |
-| TorrentSeederService | Высокий | [REAL] | Active Node по телеметрии |
-| jlibtorrent / mainline DHT | Низкий | [NEEDS-WORK] | Честно отложено |
-| MainViewModel | — | [NEEDS-WORK] | God-object → Этап 6 |
-| UI shell | — | [NEEDS-WORK] | Telegram-style → Этап 6 |
+| Компонент | Статус | Маркер |
+|-----------|--------|--------|
+| Crypto / SQLCipher / BIP39 utils | Высокий | [REAL] [PROD-READY] |
+| Tor + SOCKS5 | Высокий | [REAL] [PROD-READY] |
+| SMP / XFTP / P2P MVP | Высокий | [REAL] [PROD-READY] |
+| UI Telegram-shell + Drawer | Высокий | [REAL] |
+| Gboard + Air-Gap input | Высокий | [REAL] |
+| BIP-39 Onboarding UX | Низкий | [NEEDS-WORK] → Этап 8 |
+| RootKeyHub / единая деривация | Низкий | [NEEDS-WORK] → Этап 8 |
+| Panic PIN / duress wipe | Низкий | [NEEDS-WORK] → Этап 8 |
+| Universal Wallet | Низкий | [NEEDS-WORK] → Этап 9 |
+| Fleet Command Center | Низкий | [NEEDS-WORK] → Этап 9 |
+| Themes / Radio health | — | Этап 10 |
 
 ---
 
-## Записи аудитов
+## Записи аудитов (кратко)
 
-### Аудит 2026-11-11 — Этап 5 (P2P Crypto Cloud) — ПРИНЯТ
-
-**Что проверено:**
-- `P2pBlockStorage`: реальные файлы `blk_{hash}.bin`, AES-256-GCM, проверка SHA-256 на write/read, LRU-eviction, размер контейнера.
-- `P2pCloudEngine`: embedded HttpServer (`/p2p/ping`, `/p2p/blocks`), реальный socket latency (не random), скорости из фактических байт, Tor SOCKS optional, статусы NO_NETWORK / ACTIVE_RELAY / SEEDING / DOWNLOADING.
-- Симуляционные рандомы и фейковые кусочки из основного пути убраны (по отчёту и коду движка).
-- Честное признание: jlibtorrent / global DHT — `[NEEDS-WORK]`, MVP закрыт.
-
-**Незначительные замечания:**
-- Ключ контейнера пока из `deriveKey(string)` — в будущем лучше SecureRandom + Keystore/HKDF.
-- Micro-server слушает `127.0.0.1` — для локального MVP ок; для внешнего роя понадобится bind-политика и безопасность.
-- `getActualPiecesMap` упрощённый (index < count) — для UI-индикатора достаточно, для настоящего bitfield позже уточнить.
-
-**Вердикт:** Этап 5 принимается. Облако перестало врать.
+- **Этап 6 ПРИНЯТ:** Chat как home, Drawer вместо bottom nav, BackHandler, начало распила ViewModel.
+- **Этап 7 ПРИНЯТ:** системная Gboard, imePadding, privateImeOptions, Air-Gap toggle, Telegram bubbles/commands.
+- **Продуктовое расширение (владелец):** интеграция идей из `PerfectFriend/BIP39-Onboarding-pipeline`; master seed → все ключи; один ключ → много нод; единый центр мониторинга флота.
 
 ---
 
 ## Текущее задание Жене
 
-**Этап 6 — UI Core Refactor (Telegram-style shell)**  
-См. `CORRESPONDENCE_JOURNAL.md`.
+**Этап 8 — BIP-39 Sovereign Onboarding + Root Key Hierarchy**  
+См. `CORRESPONDENCE_JOURNAL.md` и `EVOLUTION_PLAN.md` v2.0.
