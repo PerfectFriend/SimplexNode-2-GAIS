@@ -134,8 +134,10 @@ object XftpProtocolEngine {
     ): XftpTransferManifest = withContext(Dispatchers.Default) {
         log("PREPARE: Initiating XFTP chunk segmentation for '$fileName' (${fileBytes.size} bytes)...")
         
-        // 1. Generate an ephemeral 256-bit symmetric file encryption key
-        val fileKey = CryptoUtils.deriveKey("xftp_key_${System.currentTimeMillis()}_${fileBytes.size}")
+        // 1. Generate an ephemeral 256-bit symmetric file encryption key with cryptographically secure random bytes
+        val randomKeyBytes = ByteArray(32)
+        java.security.SecureRandom().nextBytes(randomKeyBytes)
+        val fileKey = javax.crypto.spec.SecretKeySpec(randomKeyBytes, "AES")
         val fileKeyBase64 = safeBase64Encode(fileKey.encoded)
         
         // 2. Calculate root Merkle SHA-256 digest

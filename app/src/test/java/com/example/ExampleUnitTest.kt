@@ -5,12 +5,15 @@ import com.example.data.security.CryptoUtils
 import com.example.data.security.DbEncryptionManager
 import com.example.data.security.MetadataStripper
 import com.example.data.security.Socks5ProxyClient
+import com.example.network.p2p.P2pBlockStorage
+import com.example.network.p2p.P2pCloudEngine
 import com.example.network.smp.SmpProtocolEngine
 import com.example.network.xftp.XftpProtocolEngine
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
 import java.io.ByteArrayInputStream
+import java.io.File
 
 class ExampleUnitTest {
     @Test
@@ -416,6 +419,138 @@ class ExampleUnitTest {
             assertEquals("FAILED", onionManifest.status)
         } finally {
             server.stop(0)
+        }
+    }
+
+    @Test
+    fun testRealP2pBlockStorageAndLruEviction() {
+        val testDir = File(System.getProperty("java.io.tmpdir"), "p2p_test_storage_${System.currentTimeMillis()}")
+        testDir.mkdirs()
+
+        try {
+            P2pBlockStorage.initialize(testDir)
+            P2pBlockStorage.clear()
+
+            // 1. Create 5 sample blocks with known payloads
+            val blocks = List(5) { idx ->
+                val payload = "ParanoidX P2P Block Payload Data Block #$idx — ${System.nanoTime()}".toByteArray(Charsets.UTF_8)
+                val hash = P2pBlockStorage.computeSha256(payload)
+                Pair(hash, payload)
+            }
+
+            // 2. Store all 5 blocks
+            for ((hash, payload) in blocks) {
+                val stored = P2pBlockStorage.storeBlock(hash, payload)
+                assertTrue("Block $hash must be stored successfully", stored)
+                assertTrue("hasBlock must return true for stored block", P2pBlockStorage.hasBlock(hash))
+            }
+
+            // 3. Test integrity check: wrong expected hash must be rejected
+            val invalidStore = P2pBlockStorage.storeBlock("0000000000000000000000000000000000000000000000000000000000000000", blocks[0].second)
+            assertFalse("storeBlock with wrong hash must be rejected", invalidStore)
+
+            // 4. Read back and verify byte-for-byte decryption
+            for ((hash, payload) in blocks) {
+                val readData = P2pBlockStorage.readBlock(hash)
+                assertNotNull("Read block must not be null for $hash", readData)
+                assertArrayEquals("Decrypted block content must match original payload", payload, readData)
+            }
+
+            // 5. Verify physical disk size
+            val totalBytes = P2pBlockStorage.getContainerSizeBytes()
+            assertTrue("Total storage size must be greater than 0", totalBytes > 0)
+            assertEquals(5, P2pBlockStorage.listStoredBlocks().size)
+
+            // 6. Test LRU Eviction: force limit smaller than current storage
+            // Make block #4 recently accessed so it is NOT evicted first
+            P2pBlockStorage.readBlock(blocks[4].first)
+
+            val halfLimit = totalBytes / 2
+            val evictedCount = P2pBlockStorage.evictLru(halfLimit)
+            assertTrue("LRU eviction must delete at least 1 block", evictedCount >= 1)
+            assertTrue("New total storage size must be <= halfLimit", P2pBlockStorage.getContainerSizeBytes() <= halfLimit)
+            assertTrue("Recently accessed block #4 must still exist", P2pBlockStorage.hasBlock(blocks[4].first))
+        } finally {
+            P2pBlockStorage.clear()
+            testDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun testRealP2pCloudEngineNetworkBlockExchange() = runBlocking {
+        val testDir = File(System.getProperty("java.io.tmpdir"), "p2p_engine_test_${System.currentTimeMillis()}")
+        testDir.mkdirs()
+
+        try {
+            P2pBlockStorage.initialize(testDir)
+            P2pBlockStorage.clear()
+
+            // 1. Start real embedded P2P micro-server on ephemeral port
+            val serverStarted = P2pCloudEngine.startLocalPeerServer(0)
+            assertTrue("Embedded P2P peer server must start", serverStarted)
+            val port = P2pCloudEngine.serverPort
+            assertTrue("Bound port must be valid (> 0)", port > 0)
+
+            // 2. Measure REAL network latency using socket probe (no random numbers)
+            val latency = P2pCloudEngine.measureRealLatency("127.0.0.1", port)
+            assertTrue("Real socket probe must return measured latency > 0 ms", latency > 0)
+
+            // 3. Ping local peer via HTTP client
+            val pingSuccess = P2pCloudEngine.pingPeer("127.0.0.1", port, useTor = false)
+            assertTrue("HTTP ping to local peer must succeed", pingSuccess)
+            assertTrue("Peer 127.0.0.1:$port must be registered in active peers list", P2pCloudEngine.activePeers.value.contains("127.0.0.1:$port"))
+
+            // 4. Test Announce & Store block over real network HTTP POST
+            val samplePayload = "ParanoidX P2P Peer Network Test Payload 2026".toByteArray(Charsets.UTF_8)
+            val sampleHash = P2pBlockStorage.computeSha256(samplePayload)
+
+            val announced = P2pCloudEngine.announceBlockToPeer("127.0.0.1", port, sampleHash, samplePayload, useTor = false)
+            assertTrue("Announcing block over network must succeed", announced)
+            assertTrue("Block must now be saved in local storage", P2pBlockStorage.hasBlock(sampleHash))
+
+            // 5. Test Fetch block from peer over real network HTTP GET
+            val fetched = P2pCloudEngine.fetchBlockFromPeer("127.0.0.1", port, sampleHash, useTor = false)
+            assertTrue("Fetching block over network must succeed", fetched)
+
+            // 6. Test Honest Node Telemetry Evaluation
+            // Case A: Disconnected network
+            P2pCloudEngine.evaluateTelemetryAndBandwidth(
+                isCharging = true,
+                isWifi = true,
+                isScreenOff = true,
+                isNetworkAvailable = false,
+                isWifiOnlyRestricted = false,
+                isSeedingEnabled = true
+            )
+            assertEquals("Disconnected network must honestly yield NO_NETWORK status", P2pCloudEngine.NodeStatus.NO_NETWORK, P2pCloudEngine.nodeStatus.value)
+            assertEquals("0 KB/s", P2pCloudEngine.downloadSpeed.value)
+
+            // Case B: Cellular restriction (Wi-Fi only mode active)
+            P2pCloudEngine.evaluateTelemetryAndBandwidth(
+                isCharging = true,
+                isWifi = false,
+                isScreenOff = true,
+                isNetworkAvailable = true,
+                isWifiOnlyRestricted = true,
+                isSeedingEnabled = true
+            )
+            assertEquals("Cellular when restricted must honestly yield NO_NETWORK status", P2pCloudEngine.NodeStatus.NO_NETWORK, P2pCloudEngine.nodeStatus.value)
+
+            // Case C: Active Node Mode (Charging + Wi-Fi + Screen OFF + Low latency)
+            P2pCloudEngine.measureRealLatency("127.0.0.1", port)
+            P2pCloudEngine.evaluateTelemetryAndBandwidth(
+                isCharging = true,
+                isWifi = true,
+                isScreenOff = true,
+                isNetworkAvailable = true,
+                isWifiOnlyRestricted = false,
+                isSeedingEnabled = true
+            )
+            assertEquals("Charging on Wi-Fi with screen off and low latency must activate ACTIVE_RELAY", P2pCloudEngine.NodeStatus.ACTIVE_RELAY, P2pCloudEngine.nodeStatus.value)
+        } finally {
+            P2pCloudEngine.stopLocalPeerServer()
+            P2pBlockStorage.clear()
+            testDir.deleteRecursively()
         }
     }
 }

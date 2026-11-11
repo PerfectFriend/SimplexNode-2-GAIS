@@ -522,8 +522,11 @@ fun FileSharingScreen(viewModel: MainViewModel) {
 
                         // --- TORRENT PIECES VISUAL MAP ---
                         Spacer(modifier = Modifier.height(12.dp))
+                        val completedCount = torrentPieces.count { it }
+                        val totalCount = torrentPieces.size.coerceAtLeast(1)
+                        val completionPct = completedCount * 100 / totalCount
                         Text(
-                            text = getFileText("torrent_map", currentLanguage),
+                            text = "P2P CRYPTOCONTAINER SECTORS ($completedCount/$totalCount BLOCKS — $completionPct% STORED):",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.outline,
                             fontWeight = FontWeight.Bold,

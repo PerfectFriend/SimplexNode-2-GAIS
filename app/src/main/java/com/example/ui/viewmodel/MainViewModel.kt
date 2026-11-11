@@ -21,6 +21,8 @@ import com.example.network.vpn.VpnProtocolManager
 import com.example.network.vpn.VpnProfile
 import com.example.network.vpn.VpnProtocolType
 import com.example.network.vpn.VpnConfigParser
+import com.example.network.p2p.P2pBlockStorage
+import com.example.network.p2p.P2pCloudEngine
 import com.example.service.ParanoidVpnService
 import com.example.service.TorDaemonService
 import com.example.service.TorrentSeederService
@@ -301,33 +303,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Background loop to simulate torrent pieces completion and swarm activity
+        // Background loop to synchronize real P2P cryptocontainer pieces and swarm activity
         viewModelScope.launch {
             while (true) {
                 delay(3000)
                 if (_torrentSeedingEnabled.value) {
-                    // Randomly toggle/flip 1-2 missing pieces to simulate download progress!
-                    val currentPieces = _torrentPieces.value.toMutableList()
-                    val missingIndices = currentPieces.mapIndexedNotNull { index, done -> if (!done) index else null }
-                    if (missingIndices.isNotEmpty() && (0..100).random() < 25) {
-                        val luckyIndex = missingIndices.random()
-                        currentPieces[luckyIndex] = true
-                        _torrentPieces.value = currentPieces
-                        addCloudSyncLog("CLOUD_ENGINE: Downloaded chunk #$luckyIndex hash check [OK]")
-                        if (currentPieces.all { it }) {
-                            addCloudSyncLog("CLOUD_ENGINE: Torrent assembly COMPLETE! Cryptocontainer integrity verified 100%.")
-                        }
-                    }
-
-                    // Fluctuate download/upload speeds and peers slightly
-                    val p = _activeTorrentPeersCount.value
-                    val deltaPeers = (-1..1).random()
-                    _activeTorrentPeersCount.value = (p + deltaPeers).coerceIn(3, 18)
-
-                    val dSpeed = (1500..3500).random() / 1000.0
-                    val uSpeed = (1200..2500).random() / 1000.0
-                    _torrentDownloadSpeed.value = String.format(java.util.Locale.US, "%.1f MB/s", dSpeed)
-                    _torrentUploadSpeed.value = String.format(java.util.Locale.US, "%.1f MB/s", uSpeed)
+                    val pieces = P2pCloudEngine.getActualPiecesMap()
+                    _torrentPieces.value = pieces
+                    _activeTorrentPeersCount.value = P2pCloudEngine.activePeers.value.size
+                    _torrentDownloadSpeed.value = P2pCloudEngine.downloadSpeed.value
+                    _torrentUploadSpeed.value = P2pCloudEngine.uploadSpeed.value
                 }
             }
         }
@@ -1444,31 +1429,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _torrentSeedingEnabled = MutableStateFlow(true)
     val torrentSeedingEnabled: StateFlow<Boolean> = _torrentSeedingEnabled.asStateFlow()
 
-    private val _activeTorrentPeersCount = MutableStateFlow(8)
+    private val _activeTorrentPeersCount = MutableStateFlow(0)
     val activeTorrentPeersCount: StateFlow<Int> = _activeTorrentPeersCount.asStateFlow()
 
-    private val _torrentDownloadSpeed = MutableStateFlow("2.4 MB/s")
+    private val _torrentDownloadSpeed = MutableStateFlow("0 KB/s")
     val torrentDownloadSpeed: StateFlow<String> = _torrentDownloadSpeed.asStateFlow()
 
-    private val _torrentUploadSpeed = MutableStateFlow("1.8 MB/s")
+    private val _torrentUploadSpeed = MutableStateFlow("0 KB/s")
     val torrentUploadSpeed: StateFlow<String> = _torrentUploadSpeed.asStateFlow()
 
-    private val _torrentPieces = MutableStateFlow(List(100) { it < 75 }) // 75% complete
+    private val _torrentPieces = MutableStateFlow(P2pCloudEngine.getActualPiecesMap())
     val torrentPieces: StateFlow<List<Boolean>> = _torrentPieces.asStateFlow()
+
+    val p2pCloudLogs: StateFlow<List<String>> = P2pCloudEngine.cloudLogs
 
     private val _cloudSyncLogs = MutableStateFlow<List<String>>(
         listOf(
-            "CLOUD_ENGINE: Torrent engine loaded. Port 6881 bound locally.",
-            "CLOUD_ENGINE: Found DHT bootstrap nodes via Tailscale mesh",
-            "CLOUD_ENGINE: Allocated 32 GB sparse cryptocontainer on system storage (/data/user/0/...)"
+            "CLOUD_ENGINE: P2P Cryptocontainer engine loaded. Port 6881 configured.",
+            "CLOUD_ENGINE: AES-256-GCM block storage initialized on isolated sandbox storage",
+            "CLOUD_ENGINE: Seeding node ready for swarm synchronization"
         )
     )
     val cloudSyncLogs: StateFlow<List<String>> = _cloudSyncLogs.asStateFlow()
 
     fun setCryptoContainerSize(sizeGb: Int) {
         _cryptoContainerSizeGb.value = sizeGb
+        TorrentSeederService.containerSizeLimitGb.value = sizeGb
         addSystemLog("CLOUD_CONFIG", "Cryptocontainer resized to ${sizeGb}GB", "SUCCESS")
-        addCloudSyncLog("CLOUD_ENGINE: Resized sparse block partition to ${sizeGb} GB. Reallocating sectors...")
+        addCloudSyncLog("CLOUD_ENGINE: Resized block partition to ${sizeGb} GB. Reallocating LRU threshold...")
     }
 
     fun toggleWifiOnlySync(enabled: Boolean) {
@@ -1481,15 +1469,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _torrentSeedingEnabled.value = enabled
         val app = getApplication<Application>()
         if (enabled) {
-            _activeTorrentPeersCount.value = (5..15).random()
-            _torrentDownloadSpeed.value = "3.1 MB/s"
-            _torrentUploadSpeed.value = "1.9 MB/s"
-            addCloudSyncLog("CLOUD_ENGINE: Torrent listener STARTED. Registering tracker v3.onion...")
+            _activeTorrentPeersCount.value = P2pCloudEngine.activePeers.value.size
+            _torrentDownloadSpeed.value = P2pCloudEngine.downloadSpeed.value
+            _torrentUploadSpeed.value = P2pCloudEngine.uploadSpeed.value
+            addCloudSyncLog("CLOUD_ENGINE: P2P micro-server and seeder STARTED on port ${P2pCloudEngine.serverPort}...")
             
             try {
                 val intent = Intent(app, TorrentSeederService::class.java).apply {
                     action = TorrentSeederService.ACTION_START_SEEDING
                     putExtra(TorrentSeederService.EXTRA_WIFI_ONLY, _wifiOnlySync.value)
+                    putExtra(TorrentSeederService.EXTRA_CONTAINER_SIZE_GB, _cryptoContainerSizeGb.value)
                 }
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                     app.startForegroundService(intent)
@@ -1503,7 +1492,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _activeTorrentPeersCount.value = 0
             _torrentDownloadSpeed.value = "0 KB/s"
             _torrentUploadSpeed.value = "0 KB/s"
-            addCloudSyncLog("CLOUD_ENGINE: Torrent listener SHUTDOWN. Swarm connection severed.")
+            addCloudSyncLog("CLOUD_ENGINE: P2P seeder SHUTDOWN. Swarm connection severed.")
             
             try {
                 val intent = Intent(app, TorrentSeederService::class.java).apply {
@@ -1791,8 +1780,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createXftpTransfer(fileName: String, fileBytes: ByteArray, mimeType: String = "application/octet-stream") {
         viewModelScope.launch {
-            val manifest = XftpProtocolEngine.createChunkedTransfer(fileName, fileBytes, mimeType)
-            addSystemLog("XFTP_CHUNK", "Segmented '${fileName}' into ${manifest.totalChunks} chunks (64KB each)", "SUCCESS")
+            val sanitized = com.example.data.security.MetadataStripper.stripMetadata(
+                java.io.ByteArrayInputStream(fileBytes),
+                mimeType
+            )
+            val manifest = XftpProtocolEngine.createChunkedTransfer(fileName, sanitized, mimeType)
+            addSystemLog("XFTP_CHUNK", "Segmented '${fileName}' (${sanitized.size} B sanitized) into ${manifest.totalChunks} chunks (64KB each)", "SUCCESS")
         }
     }
 
