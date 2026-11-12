@@ -7,19 +7,23 @@
 
 ## Статус на 2026-11-12
 
-**Этапы 0–6 — ПРИНЯТЫ**  
-**Этап 7-revised — ПРИНЯТ** (in-app keyboard only)  
-**Этап 8 — В РАБОТЕ** (BIP-39 Onboarding + RootKeyHub)
+**Этапы 0–8 — ПРИНЯТЫ**  
+**Этап 9 — В РАБОТЕ** (Universal Wallet + Fleet Command Center)
 
-### Аудит 7-revised
+### Аудит Этапа 8
+Коммит: `feat: implement BIP-39 sovereign key derivation`
+
 Проверено:
-- `InAppGboardKeyboard.kt` (~28KB): RU/EN, symbols layers, shift/caps, haptic, AIR-GAP badge
-- `MainActivity`: `SOFT_INPUT_STATE_ALWAYS_HIDDEN`
-- Chat: in-app keyboard, без system TextField IME path
-- Сборка/тесты по отчёту зелёные
+- `RootKeyHub.kt` — setup/unlock/lock, panic wipe, HKDF domains (vault, tor, smp, p2p, fleet/node)
+- `OnboardingScreen.kt` — create/restore, verify words, Master PIN, Panic PIN, InApp keyboard
+- `PinLockScreen.kt` — in-app PIN, panic path
+- `MainAppLayout` — hard gate `!isOnboarded` / `isPinLocked`
+- Unit tests: domain separation + onion determinism (по отчёту)
 
-Неблокирующий долг → Этап 8:
-- `LocalVaultScreen` всё ещё содержит редактируемые `OutlinedTextField` (password/mnemonic/backup). Глобальный soft-input hide помогает, но secret-поля нужно явно перевести на in-app keyboard + readOnly display.
+Неблокирующие долги → Этап 9:
+- domain labels `xftp`, `wallet/evm`
+- Vault OutlinedTextField residual
+- onion string = application identity label, не полный Tor v3 encoding
 
 ### Текущее задание
-**Этап 8** — см. `CORRESPONDENCE_JOURNAL.md`.
+**Этап 9** — см. `CORRESPONDENCE_JOURNAL.md`.
