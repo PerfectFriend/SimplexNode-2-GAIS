@@ -5,19 +5,21 @@
 
 ---
 
-## Статус проекта на 2026-11-11 (вечер)
+## Статус на 2026-11-12
 
 **Этапы 0–6 — ПРИНЯТЫ**  
-**Этап 7 — НА ДОРАБОТКЕ** (коррекция: запрет system IME, только in-app keyboard)  
-**Этап 8+ — заблокированы до 7-revised**
+**Этап 7-revised — ПРИНЯТ** (in-app keyboard only)  
+**Этап 8 — В РАБОТЕ** (BIP-39 Onboarding + RootKeyHub)
 
-### Критическая продуктовая правка
-Владелец отменил модель «Gboard по умолчанию».  
-Требование: **максимально автономная нода** — ввод только через встроенную клавиатуру с эргономикой Gboard; системной IME (Google и др.) не доверяем.
+### Аудит 7-revised
+Проверено:
+- `InAppGboardKeyboard.kt` (~28KB): RU/EN, symbols layers, shift/caps, haptic, AIR-GAP badge
+- `MainActivity`: `SOFT_INPUT_STATE_ALWAYS_HIDDEN`
+- Chat: in-app keyboard, без system TextField IME path
+- Сборка/тесты по отчёту зелёные
 
----
+Неблокирующий долг → Этап 8:
+- `LocalVaultScreen` всё ещё содержит редактируемые `OutlinedTextField` (password/mnemonic/backup). Глобальный soft-input hide помогает, но secret-поля нужно явно перевести на in-app keyboard + readOnly display.
 
-## Текущее задание Жене
-
-**Этап 7-revised — In-App Keyboard Only**  
-См. `CORRESPONDENCE_JOURNAL.md`.
+### Текущее задание
+**Этап 8** — см. `CORRESPONDENCE_JOURNAL.md`.
