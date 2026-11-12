@@ -33,6 +33,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.content.ContentResolver
+import com.example.ui.components.InAppGboardKeyboard
 
 @Composable
 fun LocalVaultScreen(viewModel: MainViewModel) {
@@ -81,6 +82,7 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
     }
 
     var masterPasswordInput by remember { mutableStateOf("") }
+    var isVaultKeyboardVisible by remember { mutableStateOf(false) }
     var showAddCredentialDialog by remember { mutableStateOf(false) }
     var showDashboard by remember { mutableStateOf(true) }
 
@@ -308,10 +310,52 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clickable { isVaultKeyboardVisible = true }
                             .testTag("unlock_password_input"),
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = { isVaultKeyboardVisible = !isVaultKeyboardVisible },
+                            modifier = Modifier.testTag("toggle_inapp_vault_keyboard")
+                        ) {
+                            Icon(
+                                imageVector = if (isVaultKeyboardVisible) Icons.Default.KeyboardHide else Icons.Default.Security,
+                                contentDescription = null,
+                                tint = Color(0xFF00FF66),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (isVaultKeyboardVisible) "Скрыть In-App клавиатуру" else "Ввод через In-App клавиатуру (Air-Gap)",
+                                fontSize = 10.sp,
+                                color = Color(0xFF00FF66)
+                            )
+                        }
+                    }
+                    if (isVaultKeyboardVisible) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        InAppGboardKeyboard(
+                            text = masterPasswordInput,
+                            onTextChange = { masterPasswordInput = it },
+                            onSendOrDone = {
+                                if (masterPasswordInput.isNotBlank()) {
+                                    val success = viewModel.unlockVault(masterPasswordInput)
+                                    if (success) {
+                                        masterPasswordInput = ""
+                                        isVaultKeyboardVisible = false
+                                    }
+                                }
+                            },
+                            sendButtonLabel = "UNLOCK",
+                            onCloseKeyboard = { isVaultKeyboardVisible = false }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -329,6 +373,7 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                                     val success = viewModel.unlockVault(masterPasswordInput)
                                     if (success) {
                                         masterPasswordInput = ""
+                                        isVaultKeyboardVisible = false
                                     }
                                 }
                             },

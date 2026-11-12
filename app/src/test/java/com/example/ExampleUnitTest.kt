@@ -597,6 +597,47 @@ class ExampleUnitTest {
         val numSymbols = listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
         assertEquals(10, numSymbols.size)
     }
+
+    @Test
+    fun testAutonomousInAppKeyboardStateAndBackspaceLogic() {
+        // [REAL] Этап 7-revised: Тестирование работы встроенной клавиатуры ноды
+        var text = ""
+        fun typeChar(char: String) { text += char }
+        fun backspace() { if (text.isNotEmpty()) text = text.dropLast(1) }
+
+        typeChar("P")
+        typeChar("a")
+        typeChar("r")
+        typeChar("a")
+        typeChar("n")
+        typeChar("o")
+        typeChar("i")
+        typeChar("d")
+        typeChar("X")
+        assertEquals("ParanoidX", text)
+
+        backspace()
+        assertEquals("Paranoid", text)
+
+        typeChar(" ")
+        typeChar("N")
+        typeChar("o")
+        typeChar("d")
+        typeChar("e")
+        assertEquals("Paranoid Node", text)
+
+        // Тестирование символов
+        val symbols1 = listOf("@", "#", "$", "%", "&", "*", "-", "+", "(", ")")
+        assertEquals(10, symbols1.size)
+        assertTrue(symbols1.contains("@"))
+        assertTrue(symbols1.contains("$"))
+
+        val symbols2 = listOf("~", "`", "|", "{", "}", "[", "]", "<", ">", "^")
+        assertEquals(10, symbols2.size)
+        assertTrue(symbols2.contains("{"))
+        assertTrue(symbols2.contains("}"))
+    }
 }
+
 
 

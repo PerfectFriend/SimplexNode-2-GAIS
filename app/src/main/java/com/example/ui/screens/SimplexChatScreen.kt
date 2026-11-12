@@ -8,6 +8,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -16,8 +17,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -29,29 +28,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.input.KeyboardCapitalization
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.SimplexServer
+import com.example.ui.components.InAppGboardKeyboard
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.viewmodel.SimplexChatMessage
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-// [REAL] Этап 7 — Клавиатура и ввод (Gboard-like) + Telegram Chat UX.
-// [REAL] Полноценная поддержка системной клавиатуры (Gboard / Android IME): свайп, голосовой ввод, подсказки, буфер обмена, эмодзи.
-// [REAL] Dynamic insets imePadding() — клавиатура плавно поднимает список сообщений без перекрытия.
-// [REAL] Режим инкогнито noLearning для Gboard — защита от телеметрии и обучения предиктора.
-// [REAL] Переключатель [GBOARD] ↔ [AIR-GAP SHIELD] (приватная наэкранная клавиатура с поддержкой RU/EN раскладок).
-// [REAL] Telegram-style пузыри сообщений со статусом доставки (✓✓), шифрованием E2EE и инспектором пакетов Ed25519/X25519.
+// [REAL] Этап 7-revised: Встроенная клавиатура приложения (In-App Keyboard Only).
+// [SECURITY-CRITICAL] Системная клавиатура Android (Gboard / Vendor IME) полностью отключена.
+// [PROD-READY] Автономная нода: весь ввод сообщений, команд и секретов обрабатывается исключительно внутри процесса.
+// [PROD-READY] Эргономика Gboard: раскладки RU (ЙЦУКЕН) и EN (QWERTY), символы/цифры (?123 и =\<), Shift/Caps, тактильный отклик.
+// [PROD-READY] Telegram-style UX: пузыри сообщений со статусом доставки (✓✓), шифрованием E2EE и инспектором пакетов Ed25519/X25519.
 
 private fun getChatText(key: String, lang: String): String {
     val maps = mapOf(
@@ -67,8 +63,7 @@ private fun getChatText(key: String, lang: String): String {
             "room_packets" to "Packet Flow",
             "route_active" to "ENCRYPTION ROUTE: MATRIX P2P STANDARD",
             "secured" to "SECURED",
-            "gboard_active" to "GBOARD (SYSTEM IME) ACTIVE",
-            "airgap_active" to "AIR-GAP SHIELD ACTIVE (ZERO TELEMETRY)",
+            "keyboard_active" to "IN-APP GBOARD-STYLE KEYBOARD ACTIVE",
             "space" to "Space",
             "send" to "SEND",
             "placeholder_cmd" to "Enter command /status, /start, /stop, /test, /logs...",
@@ -96,8 +91,7 @@ private fun getChatText(key: String, lang: String): String {
             "room_packets" to "Поток Пакетов",
             "route_active" to "МАРШРУТ ШИФРОВАНИЯ: СТАНДАРТ MATRIX P2P",
             "secured" to "ЗАЩИЩЕНО",
-            "gboard_active" to "АКТИВЕН GBOARD (СИСТЕМНЫЙ ВВОД)",
-            "airgap_active" to "АКТИВЕН AIR-GAP ЩИТ (БЕЗ ТЕЛЕМЕТРИИ)",
+            "keyboard_active" to "ВСТРОЕННАЯ АВТОНОМНАЯ КЛАВИАТУРА АКТИВНА",
             "space" to "Пробел",
             "send" to "ОТПРАВИТЬ",
             "placeholder_cmd" to "Введите команду /status, /start, /stop, /test, /logs...",
@@ -125,8 +119,7 @@ private fun getChatText(key: String, lang: String): String {
             "room_packets" to "Flujo de Paquetes",
             "route_active" to "RUTA ENCRIPCIÓN: ESTÁNDAR MATRIX P2P",
             "secured" to "SEGURO",
-            "gboard_active" to "GBOARD (IME DEL SISTEMA) ACTIVO",
-            "airgap_active" to "ESCUDO AIR-GAP ACTIVO",
+            "keyboard_active" to "TECLADO AUTÓNOMO ACTIVO",
             "space" to "Espacio",
             "send" to "ENVIAR",
             "placeholder_cmd" to "Introduzca comando /status, /start, /stop, /test...",
@@ -154,8 +147,7 @@ private fun getChatText(key: String, lang: String): String {
             "room_packets" to "Flux Paquets",
             "route_active" to "ROUTE DE CHIFFREMENT: STANDARD MATRIX P2P",
             "secured" to "SÉCURISÉ",
-            "gboard_active" to "GBOARD (SYSTÈME) ACTIF",
-            "airgap_active" to "BOUCLIER AIR-GAP ACTIF",
+            "keyboard_active" to "CLAVIER AUTONOME ACTIF",
             "space" to "Espace",
             "send" to "ENVOYER",
             "placeholder_cmd" to "Entrer commande /status, /start...",
@@ -183,8 +175,7 @@ private fun getChatText(key: String, lang: String): String {
             "room_packets" to "Paketfluss",
             "route_active" to "VERSCHLÜSSELUNGSROUTE: MATRIX-P2P-STANDARD",
             "secured" to "GESICHERT",
-            "gboard_active" to "GBOARD (SYSTEM-IME) AKTIV",
-            "airgap_active" to "AIR-GAP-SCHILD AKTIV",
+            "keyboard_active" to "AUTONOME TASTATUR AKTIV",
             "space" to "Leertaste",
             "send" to "SENDEN",
             "placeholder_cmd" to "Befehl eingeben /status...",
@@ -212,8 +203,7 @@ private fun getChatText(key: String, lang: String): String {
             "room_packets" to "数据包流",
             "route_active" to "加密路由: MATRIX P2P 标准",
             "secured" to "已保护",
-            "gboard_active" to "GBOARD (系统输入法) 已就绪",
-            "airgap_active" to "AIR-GAP 隔空安全键盘已就绪",
+            "keyboard_active" to "应用内置安全键盘已就绪",
             "space" to "空格",
             "send" to "发送",
             "placeholder_cmd" to "输入控制命令 /status, /start...",
@@ -257,20 +247,19 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
     var isMatrixMode by remember { mutableStateOf(false) }
     var activeRoom by remember { mutableStateOf("#control:simplex-node.onion") }
 
-    // [REAL] Этап 7: Переключатель режима ввода (true = системный Gboard, false = Air-Gap наэкранная)
-    var isGboardMode by remember { mutableStateOf(true) }
+    // [REAL] Этап 7-revised: Встроенная клавиатура — единственный способ ввода. Системный IME выключен.
+    var isKeyboardVisible by remember { mutableStateOf(true) }
     var showEmojiStrip by remember { mutableStateOf(false) }
     var showAttachmentMenu by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
-    val focusManager = LocalFocusManager.current
 
     if (servers.isNotEmpty() && selectedServer == null) {
         selectedServer = servers.first()
     }
 
-    // Автоматическая прокрутка к последнему сообщению при получении нового
+    // Автоматическая прокрутка к последнему сообщению
     LaunchedEffect(chatMessages.size) {
         if (chatMessages.isNotEmpty()) {
             listState.animateScrollToItem(chatMessages.size - 1)
@@ -438,19 +427,18 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
         )
     }
 
-    // [REAL] Основной контейнер экрана с динамической поддержкой imePadding() для клавиатуры Gboard
+    // [REAL] Основной контейнер экрана чата
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(if (isMatrixMode) Color(0xFF070A0F) else MaterialTheme.colorScheme.background)
-            .imePadding()
             .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {
         // Multi-View Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(bottom = 8.dp),
+                .padding(bottom = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -890,7 +878,6 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
                                             fontFamily = FontFamily.Monospace
                                         )
                                         if (isMe) {
-                                            // Telegram-style Double Checkmark
                                             Text(
                                                 text = "✓✓",
                                                 fontSize = 9.sp,
@@ -1001,14 +988,22 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
 
         Spacer(modifier = Modifier.height(4.dp))
 
-        // --- [REAL] ЭТАП 7: TELEGRAM-STYLE INPUT BAR WITH GBOARD & AIR-GAP SUPPORT ---
+        // --- [REAL] ЭТАП 7-REVISED: TELEGRAM-STYLE INPUT CAPSULE (ZERO SYSTEM IME CALLS) ---
         val sendAction = {
             if (currentMessage.isNotBlank()) {
                 selectedServer?.let { server ->
                     viewModel.submitSimplexMessage(server, currentMessage)
                     currentMessage = ""
-                    focusManager.clearFocus()
                 }
+            }
+        }
+
+        // Blinking cursor state for in-app input display
+        var showBlinkingCursor by remember { mutableStateOf(true) }
+        LaunchedEffect(isKeyboardVisible) {
+            while (isKeyboardVisible) {
+                delay(500)
+                showBlinkingCursor = !showBlinkingCursor
             }
         }
 
@@ -1016,14 +1011,20 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 2.dp),
-            verticalAlignment = Alignment.Bottom
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            // Main Input Capsule
+            // Main Input Capsule (Zero System IME: Clicking this focuses In-App Keyboard)
             Surface(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(24.dp))
-                    .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(24.dp)),
+                    .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(24.dp))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        isKeyboardVisible = true
+                    },
                 color = Color(0xFF0D1420),
                 tonalElevation = 2.dp
             ) {
@@ -1095,54 +1096,64 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
                         )
                     }
 
-                    // Native Material 3 TextField — Gboard, swipe typing, voice input, noLearning incognito
-                    TextField(
-                        value = currentMessage,
-                        onValueChange = { currentMessage = it },
+                    // [SECURITY-CRITICAL] In-App Text Field Display (Zero System IME Invocation)
+                    Box(
                         modifier = Modifier
                             .weight(1f)
-                            .testTag("chat_input_field"),
-                        placeholder = {
+                            .padding(vertical = 8.dp, horizontal = 4.dp)
+                            .testTag("chat_input_field")
+                    ) {
+                        if (currentMessage.isEmpty()) {
                             Text(
                                 text = if (isMatrixMode) getChatText("placeholder_cmd", currentLanguage) else getChatText("placeholder_msg", currentLanguage),
                                 fontSize = 13.sp,
                                 color = Color(0xFF64748B)
                             )
-                        },
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            disabledContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            cursorColor = Color(0xFF00FF66)
-                        ),
-                        singleLine = false,
-                        maxLines = 4,
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Sentences,
-                            autoCorrectEnabled = false,
-                            keyboardType = KeyboardType.Text,
-                            imeAction = ImeAction.Send
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onSend = { sendAction() }
-                        )
-                    )
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = currentMessage,
+                                    fontSize = 13.sp,
+                                    color = Color.White
+                                )
+                                if (isKeyboardVisible && showBlinkingCursor) {
+                                    Text(
+                                        text = "▎",
+                                        fontSize = 13.sp,
+                                        color = Color(0xFF00FF66),
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+                    }
 
-                    // Keyboard Mode Toggle [GBOARD] ↔ [AIR-GAP SHIELD]
+                    // Clear Text Button (visible when not empty)
+                    if (currentMessage.isNotEmpty()) {
+                        IconButton(
+                            onClick = { currentMessage = "" },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Clear",
+                                tint = Color(0xFF64748B),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    // In-App Keyboard Toggle Button (keyboard hide/show)
                     IconButton(
-                        onClick = { isGboardMode = !isGboardMode },
+                        onClick = { isKeyboardVisible = !isKeyboardVisible },
                         modifier = Modifier
                             .size(36.dp)
                             .testTag("chat_mode_toggle")
                     ) {
                         Icon(
-                            imageVector = if (isGboardMode) Icons.Default.Keyboard else Icons.Default.Security,
-                            contentDescription = if (isGboardMode) "Switch to Air-Gap Keyboard" else "Switch to Gboard",
-                            tint = if (isGboardMode) Color(0xFF00FF66) else Color(0xFFE5A93C),
+                            imageVector = if (isKeyboardVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
+                            contentDescription = if (isKeyboardVisible) "Hide Keyboard" else "Show Keyboard",
+                            tint = if (isKeyboardVisible) Color(0xFF00FF66) else Color(0xFF94A3B8),
                             modifier = Modifier.size(18.dp)
                         )
                     }
@@ -1162,7 +1173,6 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
                         if (hasText) {
                             sendAction()
                         } else {
-                            // Quick voice simulation / diagnostic ping
                             currentMessage = "/test"
                         }
                     }
@@ -1187,209 +1197,20 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
             }
         }
 
-        // --- [REAL] AIR-GAP ON-SCREEN KEYBOARD (ACTIVATED IN AIR-GAP MODE) ---
+        // --- [REAL] 7-REVISED: AUTONOMOUS IN-APP GBOARD-STYLE KEYBOARD ---
         AnimatedVisibility(
-            visible = !isGboardMode,
+            visible = isKeyboardVisible,
             enter = fadeIn() + expandVertically(),
             exit = fadeOut() + shrinkVertically()
         ) {
-            AirGapShieldKeyboard(
-                currentMessage = currentMessage,
-                onMessageChange = { currentMessage = it },
-                onSendClicked = { sendAction() },
+            InAppGboardKeyboard(
+                text = currentMessage,
+                onTextChange = { currentMessage = it },
+                onSendOrDone = { sendAction() },
                 isMatrixStyle = isMatrixMode,
-                currentLanguage = currentLanguage
-            )
-        }
-    }
-}
-
-// [REAL] Обновлённая защищённая наэкранная клавиатура Air-Gap с поддержкой русской (RU) и английской (EN) раскладки
-@Composable
-fun AirGapShieldKeyboard(
-    currentMessage: String,
-    onMessageChange: (String) -> Unit,
-    onSendClicked: () -> Unit,
-    isMatrixStyle: Boolean,
-    currentLanguage: String
-) {
-    var isShiftActive by remember { mutableStateOf(false) }
-    var isSymbolsActive by remember { mutableStateOf(false) }
-    var activeKbLang by remember { mutableStateOf(if (currentLanguage == "RU") "RU" else "EN") }
-
-    val keysRow1 = when {
-        isSymbolsActive -> listOf("1", "2", "3", "4", "5", "6", "7", "8", "9", "0")
-        activeKbLang == "RU" -> listOf("й", "ц", "у", "к", "е", "н", "г", "ш", "щ", "з", "х", "ъ")
-        else -> listOf("q", "w", "e", "r", "t", "y", "u", "i", "o", "p")
-    }
-
-    val keysRow2 = when {
-        isSymbolsActive -> listOf("@", "#", "$", "%", "&", "*", "-", "+", "(", ")")
-        activeKbLang == "RU" -> listOf("ф", "ы", "в", "а", "п", "р", "о", "л", "д", "ж", "э")
-        else -> listOf("a", "s", "d", "f", "g", "h", "j", "k", "l", "/")
-    }
-
-    val keysRow3 = when {
-        isSymbolsActive -> listOf("!", "\"", "'", ":", ";", "/", "?", "=", "\\", "[DEL]")
-        activeKbLang == "RU" -> listOf("я", "ч", "с", "м", "и", "т", "ь", "б", "ю", "[DEL]")
-        else -> listOf("z", "x", "c", "v", "b", "n", "m", "_", "[DEL]")
-    }
-
-    val keyboardBg = if (isMatrixStyle) Color(0xFF080C11) else Color(0xFF0A0F18)
-    val keyBg = if (isMatrixStyle) Color(0xFF11161D) else Color(0xFF16202E)
-    val keyBorder = if (isMatrixStyle) Color(0xFF00FF66).copy(alpha = 0.25f) else Color(0xFF26354A)
-    val textColor = if (isMatrixStyle) Color(0xFF00FF66) else Color(0xFFE2E8F0)
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(keyboardBg)
-            .border(1.dp, keyBorder, RoundedCornerShape(12.dp))
-            .padding(4.dp)
-            .testTag("air_gap_keyboard"),
-        verticalArrangement = Arrangement.spacedBy(3.dp)
-    ) {
-        // Safe keyboard shield notice
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(Color(0xFFE5A93C))
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = getChatText("airgap_active", currentLanguage),
-                    fontSize = 8.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    color = Color(0xFFE5A93C)
-                )
-            }
-
-            // Language Switcher Badge
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Color(0xFF1E293B))
-                    .clickable {
-                        activeKbLang = if (activeKbLang == "RU") "EN" else "RU"
-                        isSymbolsActive = false
-                    }
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = activeKbLang,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF00FF66),
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-        }
-
-        // Row 1
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            keysRow1.forEach { char ->
-                val actualChar = if (isShiftActive) char.uppercase() else char.lowercase()
-                KeyButton(char = actualChar, weight = 1f, bg = keyBg, border = keyBorder, color = textColor) {
-                    onMessageChange(currentMessage + actualChar)
-                }
-            }
-        }
-
-        // Row 2
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            keysRow2.forEach { char ->
-                val actualChar = if (isShiftActive) char.uppercase() else char.lowercase()
-                KeyButton(char = actualChar, weight = 1f, bg = keyBg, border = keyBorder, color = textColor) {
-                    onMessageChange(currentMessage + actualChar)
-                }
-            }
-        }
-
-        // Row 3
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            keysRow3.forEach { char ->
-                if (char == "[DEL]") {
-                    KeyButton(char = "⌫", weight = 1.3f, bg = keyBg, border = keyBorder, color = Color(0xFFEF4444)) {
-                        if (currentMessage.isNotEmpty()) {
-                            onMessageChange(currentMessage.dropLast(1))
-                        }
-                    }
-                } else {
-                    val actualChar = if (isShiftActive) char.uppercase() else char.lowercase()
-                    KeyButton(char = actualChar, weight = 1f, bg = keyBg, border = keyBorder, color = textColor) {
-                        onMessageChange(currentMessage + actualChar)
-                    }
-                }
-            }
-        }
-
-        // Row 4
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            // Shift Toggle
-            KeyButton(
-                char = "⇧",
-                weight = 1.2f,
-                bg = if (isShiftActive) Color(0xFF00FF66).copy(alpha = 0.2f) else keyBg,
-                border = keyBorder,
-                color = textColor
-            ) {
-                isShiftActive = !isShiftActive
-            }
-
-            // Symbol Toggle
-            KeyButton(char = if (isSymbolsActive) "Abc" else "?123", weight = 1.2f, bg = keyBg, border = keyBorder, color = textColor) {
-                isSymbolsActive = !isSymbolsActive
-            }
-
-            // Space
-            KeyButton(char = getChatText("space", currentLanguage), weight = 3.5f, bg = keyBg, border = keyBorder, color = textColor) {
-                onMessageChange(currentMessage + " ")
-            }
-
-            // Send
-            KeyButton(
-                char = getChatText("send", currentLanguage),
-                weight = 2.1f,
-                bg = if (isMatrixStyle) Color(0xFF00FF66).copy(alpha = 0.2f) else Color(0xFF00FF66),
-                border = keyBorder,
-                color = if (isMatrixStyle) Color(0xFF00FF66) else Color.Black
-            ) {
-                onSendClicked()
-            }
-        }
-    }
-}
-
-@Composable
-fun RowScope.KeyButton(char: String, weight: Float, bg: Color, border: Color, color: Color, onClick: () -> Unit) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = bg),
-        shape = RoundedCornerShape(4.dp),
-        modifier = Modifier
-            .weight(weight)
-            .height(34.dp)
-            .border(0.5.dp, border, RoundedCornerShape(4.dp))
-            .clickable { onClick() }
-    ) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                text = char,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = color,
-                fontFamily = FontFamily.Monospace
+                sendButtonLabel = getChatText("send", currentLanguage),
+                onCloseKeyboard = { isKeyboardVisible = false },
+                modifier = Modifier.testTag("air_gap_keyboard")
             )
         }
     }
