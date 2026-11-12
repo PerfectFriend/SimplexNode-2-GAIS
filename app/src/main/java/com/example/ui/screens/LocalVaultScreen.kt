@@ -82,7 +82,7 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
     }
 
     var masterPasswordInput by remember { mutableStateOf("") }
-    var isVaultKeyboardVisible by remember { mutableStateOf(false) }
+    var isVaultKeyboardVisible by remember { mutableStateOf(true) }
     var showAddCredentialDialog by remember { mutableStateOf(false) }
     var showDashboard by remember { mutableStateOf(true) }
 
@@ -199,10 +199,12 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                     OutlinedTextField(
                         value = masterPasswordInput,
                         onValueChange = { masterPasswordInput = it },
+                        readOnly = true,
                         label = { Text(Localization.get("enter_password", currentLanguage), fontSize = 11.sp) },
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clickable { isVaultKeyboardVisible = true }
                             .testTag("setup_password_input"),
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                         colors = OutlinedTextFieldDefaults.colors(
@@ -238,14 +240,38 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                         OutlinedTextField(
                             value = restoreMnemonicInput,
                             onValueChange = { restoreMnemonicInput = it },
+                            readOnly = true,
                             label = { Text(if (currentLanguage == "RU") "Введите 12 слов восстановления" else "Enter 12-word seed phrase", fontSize = 11.sp) },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { isVaultKeyboardVisible = true },
                             textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
                             colors = OutlinedTextFieldDefaults.colors(
                                 focusedTextColor = MaterialTheme.colorScheme.onPrimaryContainer,
                                 unfocusedTextColor = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         )
+                        if (isVaultKeyboardVisible) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            InAppGboardKeyboard(
+                                text = restoreMnemonicInput,
+                                onTextChange = { restoreMnemonicInput = it },
+                                onSendOrDone = { isVaultKeyboardVisible = false },
+                                sendButtonLabel = "DONE",
+                                onCloseKeyboard = { isVaultKeyboardVisible = false }
+                            )
+                        }
+                    } else {
+                        if (isVaultKeyboardVisible) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            InAppGboardKeyboard(
+                                text = masterPasswordInput,
+                                onTextChange = { masterPasswordInput = it },
+                                onSendOrDone = { isVaultKeyboardVisible = false },
+                                sendButtonLabel = "SET",
+                                onCloseKeyboard = { isVaultKeyboardVisible = false }
+                            )
+                        }
                     }
                     Spacer(modifier = Modifier.height(12.dp))
                     Button(
@@ -306,6 +332,7 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                     OutlinedTextField(
                         value = masterPasswordInput,
                         onValueChange = { masterPasswordInput = it },
+                        readOnly = true,
                         label = { Text(Localization.get("enter_password", currentLanguage), fontSize = 11.sp) },
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier
@@ -1012,6 +1039,7 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                                         fileVaultUnlockPassword = it
                                         fileVaultUnlockError = false
                                     },
+                                    readOnly = true,
                                     label = { Text("Confirm Master Passphrase") },
                                     visualTransformation = PasswordVisualTransformation(),
                                     modifier = Modifier
@@ -1019,6 +1047,27 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                                         .testTag("file_vault_lock_input"),
                                     singleLine = true,
                                     isError = fileVaultUnlockError
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                InAppGboardKeyboard(
+                                    text = fileVaultUnlockPassword,
+                                    onTextChange = { 
+                                        fileVaultUnlockPassword = it
+                                        fileVaultUnlockError = false
+                                    },
+                                    onSendOrDone = {
+                                        if (fileVaultUnlockPassword.isNotBlank()) {
+                                            val valid = viewModel.unlockVault(fileVaultUnlockPassword)
+                                            if (valid) {
+                                                isFileVaultUnlocked = true
+                                                fileVaultUnlockPassword = ""
+                                                fileVaultUnlockError = false
+                                            } else {
+                                                fileVaultUnlockError = true
+                                            }
+                                        }
+                                    },
+                                    sendButtonLabel = "CONFIRM"
                                 )
                                 if (fileVaultUnlockError) {
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -2223,9 +2272,17 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                     OutlinedTextField(
                         value = backupPassphrase,
                         onValueChange = { backupPassphrase = it },
+                        readOnly = true,
                         label = { Text("Backup Passphrase (Mandatory)") },
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth().testTag("backup_passphrase_input")
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    InAppGboardKeyboard(
+                        text = backupPassphrase,
+                        onTextChange = { backupPassphrase = it },
+                        onSendOrDone = {},
+                        sendButtonLabel = "DONE"
                     )
 
                     Divider(modifier = Modifier.padding(vertical = 4.dp))

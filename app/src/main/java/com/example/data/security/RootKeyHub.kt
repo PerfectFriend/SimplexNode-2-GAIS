@@ -256,6 +256,25 @@ object RootKeyHub {
         return hkdfExpand(seed, "fleet_salt".toByteArray(Charsets.UTF_8), "ParanoidX/Fleet/Node/$nodeIndex".toByteArray(Charsets.UTF_8), 32)
     }
 
+    /**
+     * Derives deterministic XFTP Chunk Transfer encryption key:
+     * Domain context: "ParanoidX/XFTP/ChunkKey/v1"
+     */
+    fun deriveXftpKey(): SecretKey {
+        val seed = masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+        val xftpKeyBytes = hkdfExpand(seed, "xftp_salt".toByteArray(Charsets.UTF_8), "ParanoidX/XFTP/ChunkKey/v1".toByteArray(Charsets.UTF_8), 32)
+        return SecretKeySpec(xftpKeyBytes, "AES")
+    }
+
+    /**
+     * Derives deterministic Universal EVM Wallet key:
+     * Domain context: "ParanoidX/Wallet/EVM/v1"
+     */
+    fun deriveWalletEvmKey(): ByteArray {
+        val seed = masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+        return hkdfExpand(seed, "evm_salt".toByteArray(Charsets.UTF_8), "ParanoidX/Wallet/EVM/v1".toByteArray(Charsets.UTF_8), 32)
+    }
+
     // --- RFC 5869 HKDF-SHA512 IMPLEMENTATION ---
 
     /**

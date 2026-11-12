@@ -651,6 +651,8 @@ class ExampleUnitTest {
         val torKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Tor/HiddenService/v3".toByteArray(), 32)
         val simpleXKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/SimpleX/Identity/v1".toByteArray(), 32)
         val p2pKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/P2P/SwarmKey/v1".toByteArray(), 32)
+        val xftpKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/XFTP/ChunkKey/v1".toByteArray(), 32)
+        val evmKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Wallet/EVM/v1".toByteArray(), 32)
         val fleet0KeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Fleet/Node/0".toByteArray(), 32)
         val fleet1KeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Fleet/Node/1".toByteArray(), 32)
 
@@ -659,6 +661,8 @@ class ExampleUnitTest {
         assertEquals(32, torKeyBytes.size)
         assertEquals(32, simpleXKeyBytes.size)
         assertEquals(32, p2pKeyBytes.size)
+        assertEquals(32, xftpKeyBytes.size)
+        assertEquals(32, evmKeyBytes.size)
         assertEquals(32, fleet0KeyBytes.size)
         assertEquals(32, fleet1KeyBytes.size)
 
@@ -666,6 +670,8 @@ class ExampleUnitTest {
         assertFalse(vaultKeyBytes.contentEquals(torKeyBytes))
         assertFalse(vaultKeyBytes.contentEquals(simpleXKeyBytes))
         assertFalse(vaultKeyBytes.contentEquals(p2pKeyBytes))
+        assertFalse(vaultKeyBytes.contentEquals(xftpKeyBytes))
+        assertFalse(vaultKeyBytes.contentEquals(evmKeyBytes))
         assertFalse(fleet0KeyBytes.contentEquals(fleet1KeyBytes))
 
         // Deterministic reproducibility: same seed + same domain info = identical bytes
