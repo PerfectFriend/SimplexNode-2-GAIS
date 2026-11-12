@@ -13,6 +13,8 @@ import com.example.data.model.SimplexServer
 import com.example.data.model.VaultItem
 import com.example.data.security.CryptoUtils
 import com.example.data.security.DbEncryptionManager
+import com.example.data.security.RootKeyHub
+import com.example.data.security.Bip39Utils
 import com.example.data.security.Socks5ProxyClient
 import com.example.network.TorNetworkManager
 import com.example.network.smp.SmpProtocolEngine
@@ -73,6 +75,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // [REAL] Хранение и распространение мнемоники через Bip39Utils
     private val _bip39Mnemonic = MutableStateFlow("")
     val bip39Mnemonic: StateFlow<String> = _bip39Mnemonic.asStateFlow()
+
+    // --- Sovereign Onboarding & Root Key State (Stage 8) ---
+    private val _isOnboarded = MutableStateFlow(false)
+    val isOnboarded: StateFlow<Boolean> = _isOnboarded.asStateFlow()
+
+    private val _isPinLocked = MutableStateFlow(true)
+    val isPinLocked: StateFlow<Boolean> = _isPinLocked.asStateFlow()
+
+    private val _activeOnionAddress = MutableStateFlow("node_simplex_v3.onion")
+    val activeOnionAddress: StateFlow<String> = _activeOnionAddress.asStateFlow()
 
     // --- Telemetry States directly linked to active seeder telemetry service ---
     val isCharging: StateFlow<Boolean> = TorrentSeederService.isCharging.asStateFlow()
@@ -258,6 +270,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // Sovereign Root Key Onboarding check (Stage 8)
+        val onboarded = RootKeyHub.isOnboarded(application)
+        _isOnboarded.value = onboarded
+        _isPinLocked.value = onboarded
+        _activeOnionAddress.value = RootKeyHub.getOnionAddress(application)
+
         // Prepopulate preferences & basic default configs if needed
         viewModelScope.launch {
             // Check if user has initialized master pass via preferences or room mock.
@@ -383,6 +401,58 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             addSystemLog("VAULT", "Password setup and BIP-39 generation complete. PBKDF2-HMAC-SHA512 KDF engaged.", "SUCCESS")
             addCloudSyncLog("CLOUD_ENGINE: Derived deterministic Tor onion address from BIP-39 seed: ${_simplexOnionAddress.value}")
         }
+    }
+
+    // [REAL] Stage 8: Sovereign Onboarding completion
+    fun completeOnboarding(mnemonic: String, pin: String, panicPin: String) {
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            val success = RootKeyHub.setupMasterKeys(app, mnemonic, pin, panicPin)
+            if (success) {
+                _isOnboarded.value = true
+                _isPinLocked.value = false
+                _isUnlocked.value = true
+                _bip39Mnemonic.value = mnemonic
+                _activeOnionAddress.value = RootKeyHub.getOnionAddress(app)
+                setupMasterPassword(pin, mnemonic)
+                addSystemLog("ONBOARDING", "Sovereign BIP-39 root keys initialized successfully. Onion: ${_activeOnionAddress.value}", "SUCCESS")
+            }
+        }
+    }
+
+    // [REAL] Stage 8: Sovereign PIN verification with Panic Wipe support
+    fun verifyPinOrPanic(enteredPin: String): RootKeyHub.PinResult {
+        val app = getApplication<Application>()
+        val result = RootKeyHub.verifyPin(app, enteredPin)
+        when (result) {
+            RootKeyHub.PinResult.SUCCESS -> {
+                _isPinLocked.value = false
+                _isUnlocked.value = true
+                unlockVault(enteredPin)
+                addSystemLog("PIN", "Node unlocked successfully via sovereign PIN", "SUCCESS")
+            }
+            RootKeyHub.PinResult.PANIC_WIPED -> {
+                _isOnboarded.value = false
+                _isPinLocked.value = true
+                _isUnlocked.value = false
+                _isPasswordSetup.value = false
+                _bip39Mnemonic.value = ""
+                _simplexChatMessages.value = emptyList()
+                addSystemLog("PANIC", "EMERGENCY PANIC WIPE EXECUTED. All node secrets purged.", "CRITICAL")
+            }
+            RootKeyHub.PinResult.INVALID -> {
+                addSystemLog("PIN", "Invalid PIN attempt detected", "FAILED")
+            }
+        }
+        return result
+    }
+
+    // [REAL] Stage 8: Lock node and purge master secrets from memory
+    fun lockNode() {
+        RootKeyHub.lockNode()
+        _isPinLocked.value = true
+        _isUnlocked.value = false
+        addSystemLog("LOCK", "Node locked. Master keys purged from memory.", "PENDING")
     }
 
     fun unlockVault(password: String): Boolean {

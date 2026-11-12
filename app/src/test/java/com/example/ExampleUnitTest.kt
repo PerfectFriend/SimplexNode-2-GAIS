@@ -4,6 +4,7 @@ import com.example.data.security.Bip39Utils
 import com.example.data.security.CryptoUtils
 import com.example.data.security.DbEncryptionManager
 import com.example.data.security.MetadataStripper
+import com.example.data.security.RootKeyHub
 import com.example.data.security.Socks5ProxyClient
 import com.example.network.p2p.P2pBlockStorage
 import com.example.network.p2p.P2pCloudEngine
@@ -637,7 +638,53 @@ class ExampleUnitTest {
         assertTrue(symbols2.contains("{"))
         assertTrue(symbols2.contains("}"))
     }
+
+    @Test
+    fun testRootKeyHubHkdfDerivationAndDomainSeparation() {
+        // [REAL] Этап 8: RFC 5869 HKDF-SHA512 domain-separated key expansion test
+        val testMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed = Bip39Utils.deriveSeed(testMnemonic)
+        assertEquals(64, seed.size) // 512-bit master seed
+
+        // 1. Expand different domain keys
+        val vaultKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Vault/Key/v1".toByteArray(), 32)
+        val torKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Tor/HiddenService/v3".toByteArray(), 32)
+        val simpleXKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/SimpleX/Identity/v1".toByteArray(), 32)
+        val p2pKeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/P2P/SwarmKey/v1".toByteArray(), 32)
+        val fleet0KeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Fleet/Node/0".toByteArray(), 32)
+        val fleet1KeyBytes = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Fleet/Node/1".toByteArray(), 32)
+
+        // All derived keys must be 32 bytes (AES-256 / Ed25519 seed size)
+        assertEquals(32, vaultKeyBytes.size)
+        assertEquals(32, torKeyBytes.size)
+        assertEquals(32, simpleXKeyBytes.size)
+        assertEquals(32, p2pKeyBytes.size)
+        assertEquals(32, fleet0KeyBytes.size)
+        assertEquals(32, fleet1KeyBytes.size)
+
+        // Strict domain separation: No two domains produce the same key!
+        assertFalse(vaultKeyBytes.contentEquals(torKeyBytes))
+        assertFalse(vaultKeyBytes.contentEquals(simpleXKeyBytes))
+        assertFalse(vaultKeyBytes.contentEquals(p2pKeyBytes))
+        assertFalse(fleet0KeyBytes.contentEquals(fleet1KeyBytes))
+
+        // Deterministic reproducibility: same seed + same domain info = identical bytes
+        val vaultKeyReproduced = RootKeyHub.hkdfExpand(seed, "salt".toByteArray(), "ParanoidX/Vault/Key/v1".toByteArray(), 32)
+        assertArrayEquals("HKDF derivation must be 100% deterministic", vaultKeyBytes, vaultKeyReproduced)
+    }
+
+    @Test
+    fun testDeterministicOnionAddressDerivation() {
+        // [REAL] Этап 8: Детерминированный вывод v3 .onion адреса
+        val testMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed = Bip39Utils.deriveSeed(testMnemonic)
+
+        val onionAddress1 = RootKeyHub.deriveTorOnionAddress(seed)
+        val onionAddress2 = RootKeyHub.deriveTorOnionAddress(seed)
+
+        assertNotNull(onionAddress1)
+        assertTrue(onionAddress1.startsWith("px_"))
+        assertTrue(onionAddress1.endsWith("node.onion"))
+        assertEquals("Onion address must be completely deterministic across restarts", onionAddress1, onionAddress2)
+    }
 }
-
-
-

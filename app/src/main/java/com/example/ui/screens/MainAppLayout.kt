@@ -36,6 +36,29 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainAppLayout(viewModel: MainViewModel) {
+    val isOnboarded by viewModel.isOnboarded.collectAsState()
+    val isPinLocked by viewModel.isPinLocked.collectAsState()
+    val activeOnionAddress by viewModel.activeOnionAddress.collectAsState()
+
+    // [REAL] Этап 8: Sovereign Onboarding Gate (Zero system IME)
+    if (!isOnboarded) {
+        OnboardingScreen(
+            viewModel = viewModel,
+            onOnboardingFinished = { /* State is handled in MainViewModel */ }
+        )
+        return
+    }
+
+    // [REAL] Этап 8: PIN & Panic PIN Lock Gate (Zero system IME)
+    if (isPinLocked) {
+        PinLockScreen(
+            viewModel = viewModel,
+            onUnlockSuccess = { /* State is handled in MainViewModel */ },
+            onPanicWiped = { /* State is handled in MainViewModel */ }
+        )
+        return
+    }
+
     // [REAL] Главный экран по умолчанию — Чат в стиле Telegram
     var activeTab by remember { mutableStateOf("chat") }
     var showSplashScreen by remember { mutableStateOf(false) }
@@ -140,7 +163,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                         fontSize = 18.sp
                     )
                     Text(
-                        text = "node_simplex_v3.onion • E2EE Mesh",
+                        text = "$activeOnionAddress • E2EE Mesh",
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         color = Color(0xFF94A3B8)
@@ -427,6 +450,23 @@ fun MainAppLayout(viewModel: MainViewModel) {
 
                     if (isUnlocked) {
                         Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = {
+                                coroutineScope.launch { drawerState.close() }
+                                viewModel.lockNode()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("button_lock_node"),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.5f))
+                        ) {
+                            Icon(imageVector = Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Заблокировать Ноду (PIN)", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
                         OutlinedButton(
                             onClick = { viewModel.lockVault() },
                             modifier = Modifier.fillMaxWidth(),
