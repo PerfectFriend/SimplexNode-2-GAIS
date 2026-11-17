@@ -560,11 +560,13 @@ fun OnboardingScreen(
 
                         val summaryItems = listOf(
                             "Master Root Seed" to "BIP-39 512-bit PBKDF2 HMAC-SHA512",
-                            "SQLCipher Vault" to "AES-256-GCM (Domain: ParanoidX/Vault/Key/v1)",
-                            "Tor v3 Hidden Service" to "Ed25519 (px_simplex_v3_mesh.onion)",
-                            "SimpleX Chat Identity" to "Double Ratchet X25519 E2EE",
-                            "P2P Cloud Container" to "AES-GCM Disperse Swarm Key",
-                            "Panic PIN Wipe Shield" to "Duress Auto-Zeroize Active"
+                            "SQLCipher Vault" to "ParanoidX/Vault/Key/v1 (AES-256-GCM)",
+                            "Node Identity Label" to "ParanoidX/Tor/HiddenService/v3 (px_…node.onion)",
+                            "SimpleX Chat Identity" to "ParanoidX/SimpleX/Identity/v1 (Double Ratchet)",
+                            "XFTP Chunk Encryption" to "ParanoidX/XFTP/ChunkKey/v1 (AES-256)",
+                            "P2P Cloud Container" to "ParanoidX/P2P/SwarmKey/v1 (Disperse Swarm)",
+                            "Universal EVM Wallet" to "ParanoidX/Wallet/EVM/v1 (EIP-55 Non-Custodial)",
+                            "Fleet Command Nodes" to "ParanoidX/Fleet/Node/{0..N} + Panic Wipe Shield"
                         )
 
                         summaryItems.forEach { (title, desc) ->

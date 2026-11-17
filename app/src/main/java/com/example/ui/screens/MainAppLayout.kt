@@ -69,6 +69,8 @@ fun MainAppLayout(viewModel: MainViewModel) {
     val currentLanguage by viewModel.currentLanguage.collectAsState()
     val seederStatus by viewModel.torrentSeedingEnabled.collectAsState()
     val activePeers by viewModel.activeTorrentPeersCount.collectAsState()
+    val walletEvmAddress by viewModel.walletEvmAddress.collectAsState()
+    val fleetNodes by viewModel.fleetNodes.collectAsState()
 
     var showLanguageMenu by remember { mutableStateOf(false) }
 
@@ -336,6 +338,84 @@ fun MainAppLayout(viewModel: MainViewModel) {
 
                     Spacer(modifier = Modifier.height(4.dp))
 
+                    // 4.5 UNIVERSAL WALLET (Stage 9)
+                    NavigationDrawerItem(
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Default.AccountBalanceWallet,
+                                contentDescription = "Universal Wallet",
+                                tint = if (activeTab == "wallet") Color(0xFF00FF66) else Color(0xFF94A3B8)
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = Localization.get("nav_wallet", currentLanguage),
+                                fontWeight = if (activeTab == "wallet") FontWeight.Bold else FontWeight.Normal,
+                                color = if (activeTab == "wallet") Color.White else Color(0xFFCBD5E1)
+                            )
+                        },
+                        badge = {
+                            Text(
+                                text = if (walletEvmAddress.isNotBlank()) "0x..${walletEvmAddress.takeLast(4)}" else "EVM",
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00FF66)
+                            )
+                        },
+                        selected = activeTab == "wallet",
+                        onClick = {
+                            activeTab = "wallet"
+                            coroutineScope.launch { drawerState.close() }
+                        },
+                        colors = NavigationDrawerItemDefaults.colors(
+                            selectedContainerColor = Color(0xFF1E293B),
+                            unselectedContainerColor = Color.Transparent
+                        ),
+                        modifier = Modifier.testTag("nav_drawer_wallet")
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // 4.6 FLEET COMMAND CENTER (Stage 9)
+                    NavigationDrawerItem(
+                        icon = {
+                            Icon(
+                                imageVector = Icons.Default.Hub,
+                                contentDescription = "Fleet Command Center",
+                                tint = if (activeTab == "fleet") Color(0xFF00B0FF) else Color(0xFF94A3B8)
+                            )
+                        },
+                        label = {
+                            Text(
+                                text = Localization.get("nav_fleet", currentLanguage),
+                                fontWeight = if (activeTab == "fleet") FontWeight.Bold else FontWeight.Normal,
+                                color = if (activeTab == "fleet") Color.White else Color(0xFFCBD5E1)
+                            )
+                        },
+                        badge = {
+                            Text(
+                                text = "${fleetNodes.size} NODES",
+                                fontSize = 9.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF00B0FF)
+                            )
+                        },
+                        selected = activeTab == "fleet",
+                        onClick = {
+                            activeTab = "fleet"
+                            coroutineScope.launch { drawerState.close() }
+                        },
+                        colors = NavigationDrawerItemDefaults.colors(
+                            selectedContainerColor = Color(0xFF1E293B),
+                            unselectedContainerColor = Color.Transparent
+                        ),
+                        modifier = Modifier.testTag("nav_drawer_fleet")
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
                     // 5. DIAGNOSTICS & LOGS (Terminal)
                     NavigationDrawerItem(
                         icon = {
@@ -526,6 +606,8 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 "vault" -> Localization.get("nav_vault", currentLanguage)
                                 "network" -> Localization.get("nav_net", currentLanguage)
                                 "file" -> Localization.get("nav_files", currentLanguage)
+                                "wallet" -> Localization.get("nav_wallet", currentLanguage)
+                                "fleet" -> Localization.get("nav_fleet", currentLanguage)
                                 "logs" -> Localization.get("nav_debug", currentLanguage)
                                 else -> "ParanoidX"
                             }
@@ -534,6 +616,8 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 "vault" -> if (isUnlocked) "Сейф активен (SQLCipher)" else "Заблокировано"
                                 "network" -> "SOCKS5 127.0.0.1:9050"
                                 "file" -> "XFTP & P2P Swarm ($activePeers peers)"
+                                "wallet" -> "ParanoidX/Wallet/EVM/v1 • Non-Custodial"
+                                "fleet" -> "Fleet Command • ${fleetNodes.size} Nodes"
                                 "logs" -> "Диагностика узла"
                                 else -> ""
                             }
@@ -606,6 +690,8 @@ fun MainAppLayout(viewModel: MainViewModel) {
                     "vault" -> LocalVaultScreen(viewModel)
                     "network" -> NetworkScreen(viewModel)
                     "file" -> FileSharingScreen(viewModel)
+                    "wallet" -> WalletScreen(viewModel)
+                    "fleet" -> FleetScreen(viewModel)
                     "logs" -> LogsScreen(viewModel)
                 }
             }

@@ -86,3 +86,55 @@ OnboardingScreen (create/restore/verify/PIN/panic), RootKeyHub (HKDF domains), P
 Аудитор, который уже видит табличку node/0 … node/N
 
 ---
+**[2026-11-17 23:30 UTC]** | От: Женя | Кому: Гриша | Тип: ОТЧЁТ
+**Тема:** Сводный отчёт: закрытие долгов Этапа 8 + реализация Этапа 9 (Universal Wallet + Fleet Command Center)
+
+Гриша, принял твой аудит Этапа 8 и задание на Этап 9 (плюс учёл всё из предыдущего забега и свежего пулла). Весь объём закрыт, протестирован и собран.
+
+### 1. Закрытие неблокирующих долгов Этапа 8 (за предыдущий и текущий забеги)
+- **Residual `OutlinedTextField` в `LocalVaultScreen.kt`:** Все оставшиеся поля ввода (`zk_backup_node_input`, 4 поля диалога добавления учётных записей, `backup_passphrase_input` / `import_backup_payload_input` с кнопкой вставки из буфера, поля создания кастомного файла, `file_vault_lock_input`) переведены в `readOnly = true` с вводом строго через `InAppGboardKeyboard` (нулевое обращение к системному IME).
+- **Явные домены в `RootKeyHub`:** Добавлены явные методы `deriveXftpKey()` (`ParanoidX/XFTP/ChunkKey/v1`) и `deriveWalletEvmKey()` (`ParanoidX/Wallet/EVM/v1`), оба поддерживают как активную разблокированную сессию, так и передачу `customSeed` для детерминированных JVM-тестов.
+- **Честная маркировка `.onion`:** `deriveTorOnionAddress()` и `OnboardingScreen` (Step 4 `DERIVATION_SUMMARY`) явно зафиксированы и задокументированы как **детерминированный identity-label приложения** (`px_…node.onion`), без выдачи его за сырой wire-format Tor v3 base32.
+
+### 2. Таблица иерархии ключей `RootKeyHub` (`path -> назначение`)
+
+| Domain Path (HKDF-SHA512 info) | Метод в `RootKeyHub` | Назначение |
+|---|---|---|
+| `ParanoidX/Vault/Key/v1` | `deriveVaultKey(salt)` | AES-256-GCM / SQLCipher защита локального сейфа и секретов |
+| `ParanoidX/Tor/HiddenService/v3` | `deriveTorOnionKey()` / `deriveTorOnionAddress()` | Детерминированный материал и application identity-label (`px_…node.onion`) |
+| `ParanoidX/SimpleX/Identity/v1/{client,peer}` | `deriveSimpleXIdentityKey()` | Детерминированные ключевые идентификаторы SimpleX E2EE |
+| `ParanoidX/XFTP/ChunkKey/v1` | `deriveXftpKey()` | Ключ шифрования 64KB чанков передачи XFTP (AES-256) |
+| `ParanoidX/P2P/SwarmKey/v1` | `deriveP2pSwarmKey()` | Ключ криптоконтейнера и P2P-блоков роя (AES-256) |
+| `ParanoidX/Wallet/EVM/v1` (+ `/public`, `/personal_sign`) | `deriveWalletEvmKey()` / `deriveWalletEvmAddress()` / `signWalletChallenge()` | Universal Wallet MVP: EIP-55 `0x…` адрес + EIP-191 Keccak-256 подпись challenge |
+| `ParanoidX/Fleet/Node/{index}` | `deriveFleetNodeKey(index)` / `deriveFleetNodeInfo(index)` | Детерминированные sub-keys, `nodeId`, fingerprint и identity-label нод флота `#0..N` |
+
+### 3. Этап 9 — Universal Wallet MVP (`WalletScreen.kt`, `Keccak256.kt`, `RootKeyHub.kt`)
+- Реализован pure-Kotlin `Keccak256.kt` (padding `0x01`, стандарт EVM, `toEip55Address`, `ethereumMessageHash`).
+- `RootKeyHub.deriveWalletEvmAddress()` стабильно выводит checksummed `0x…` адрес из Master Seed; адрес идентичен при повторной разблокировке ноды и очищается при `lockNode()` / `triggerPanicWipe()`.
+- Экран `WalletScreen`: отображение EVM-адреса, `KEY FP`, копирование в буфер, оффлайн-подпись произвольного challenge (`InAppGboardKeyboard` + preset-чипы, без системной клавиатуры) и локальная криптографическая верификация подписи (`VALID / INVALID`). Никаких кастодиальных серверов.
+
+### 4. Этап 9 — Fleet Command Center (`FleetScreen.kt`, `FleetNode.kt`, `MainViewModel.kt`)
+- Локальный реестр флота (`paranoidx_fleet_registry` SharedPreferences, включён в `triggerPanicWipe`): хранит `nodeIndex`, `label`, `transportHint`, детерминированные `domainPath`, `nodeId`, `fingerprint`, `identityLabel`.
+- Узел `#0` (текущее устройство) гарантируется всегда и отображает честную живую телеметрию (`Tor`, `P2P Swarm`, `SimpleX relays`).
+- Добавление логической ноды вычисляет `nextIndex` из того же Master Seed (ввод имени и transport hint — через `InAppGboardKeyboard` в диалоге).
+- **Честные статусы:** удалённые ноды `#1..N` без реального активного линка всегда отображаются как `REMOTE • STANDBY (NO LINK)` (жёлтый бейдж), без рисования фейкового «online».
+
+### 5. Навигация и локализация (`MainAppLayout.kt`, `Localization.kt`)
+- В `ModalNavigationDrawer` добавлены пункты `Wallet` (`nav_drawer_wallet`) и `Fleet` (`nav_drawer_fleet`), локализованные для `RU`, `EN`, `ES`, `FR`, `DE`, `ZH`.
+- Главным экраном по умолчанию остался `chat`, кнопка назад и `BackHandler` корректно возвращают в чат.
+- Регрессий онбординга, PIN-гейта, Panic Wipe и встроенной клавиатуры нет.
+
+### 6. Проверки и сборка (`ExampleUnitTest.kt`)
+- Добавлены unit-тесты:
+  - `testKeccak256StandardVectorAndEip55` (эталонный вектор пустого входа EVM Keccak-256 + формат EIP-55)
+  - `testUniversalWalletEvmAddressDeterminismAndSigning` (стабильность `0x…` между unlock, изоляция `xftp`/`evm`, подпись и верификация/отклонение подменённого challenge и чужого seed)
+  - `testFleetNodeDeterministicDerivation` (детерминизм и уникальность `node#0..#2`)
+  - В `testRootKeyHubHkdfDerivationAndDomainSeparation` добавлена проверка `ParanoidX/XFTP/ChunkKey/v1`, `ParanoidX/Wallet/EVM/v1`, `ParanoidX/Fleet/Node/0..1`.
+- `gradle :app:testDebugUnitTest` — **BUILD SUCCESSFUL**
+- `compile_applet` — **Build succeeded**
+
+Жду ревью, Гриша!
+
+Женя  
+Lead Senior Dev
+

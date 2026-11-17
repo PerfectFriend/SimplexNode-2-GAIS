@@ -7,7 +7,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
@@ -16,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
@@ -26,6 +29,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.theme.Localization
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -1767,24 +1772,49 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                                     )
                                     Spacer(modifier = Modifier.height(12.dp))
 
-                                    // Node Input URL
+                                    // Node Input URL (Zero-IME In-App Keyboard)
                                     var nodeUrlInput by remember { mutableStateOf(zkCloudBackupUrl) }
+                                    var isBackupUrlKeyboardVisible by remember { mutableStateOf(false) }
                                     OutlinedTextField(
                                         value = nodeUrlInput,
                                         onValueChange = { 
                                             nodeUrlInput = it
                                             viewModel.setZkCloudBackupUrl(it)
                                         },
+                                        readOnly = true,
                                         label = { Text("Backup Proxy Node URL") },
                                         singleLine = true,
                                         leadingIcon = {
                                             Icon(imageVector = Icons.Default.Dns, contentDescription = null, modifier = Modifier.size(18.dp))
                                         },
+                                        trailingIcon = {
+                                            IconButton(onClick = { isBackupUrlKeyboardVisible = !isBackupUrlKeyboardVisible }) {
+                                                Icon(
+                                                    imageVector = if (isBackupUrlKeyboardVisible) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
+                                                    contentDescription = "Toggle In-App Keyboard",
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        },
                                         modifier = Modifier
                                             .fillMaxWidth()
+                                            .onFocusChanged { if (it.isFocused) isBackupUrlKeyboardVisible = true }
                                             .testTag("zk_backup_node_input"),
                                         shape = RoundedCornerShape(8.dp)
                                     )
+                                    if (isBackupUrlKeyboardVisible) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        InAppGboardKeyboard(
+                                            text = nodeUrlInput,
+                                            onTextChange = {
+                                                nodeUrlInput = it
+                                                viewModel.setZkCloudBackupUrl(it)
+                                            },
+                                            onSendOrDone = { isBackupUrlKeyboardVisible = false },
+                                            sendButtonLabel = "SAVE URL",
+                                            onCloseKeyboard = { isBackupUrlKeyboardVisible = false }
+                                        )
+                                    }
 
                                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -2190,79 +2220,187 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
         }
     }
 
-    // --- DIALOGS HANDLING ---
+    // --- DIALOGS HANDLING (ZERO SYSTEM IME — ALL SECRET INPUTS ON IN-APP KEYBOARD) ---
     if (showAddCredentialDialog) {
-        AlertDialog(
+        var activeCredField by remember { mutableStateOf("title") }
+        Dialog(
             onDismissRequest = { showAddCredentialDialog = false },
-            title = { Text("Seal Local Credential Record") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Seal Local Credential Record (Air-Gap)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Нажмите на поле для ввода через In-App клавиатуру",
+                        fontSize = 10.sp,
+                        color = Color(0xFF00FF66)
+                    )
                     OutlinedTextField(
                         value = credentialTitle,
                         onValueChange = { credentialTitle = it },
+                        readOnly = true,
                         label = { Text("Platform / Reference name") },
-                        modifier = Modifier.fillMaxWidth().testTag("input_cred_title")
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00FF66),
+                            unfocusedBorderColor = if (activeCredField == "title") Color(0xFF00FF66) else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeCredField = "title" }
+                            .testTag("input_cred_title")
                     )
                     OutlinedTextField(
                         value = credentialUser,
                         onValueChange = { credentialUser = it },
+                        readOnly = true,
                         label = { Text("Identifier ID / User mapping") },
-                        modifier = Modifier.fillMaxWidth().testTag("input_cred_identity")
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00FF66),
+                            unfocusedBorderColor = if (activeCredField == "user") Color(0xFF00FF66) else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeCredField = "user" }
+                            .testTag("input_cred_identity")
                     )
                     OutlinedTextField(
                         value = credentialSecret,
                         onValueChange = { credentialSecret = it },
+                        readOnly = true,
                         label = { Text("Encrypted Secret (Password / RSA Key)") },
-                        modifier = Modifier.fillMaxWidth().testTag("input_cred_secret")
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00FF66),
+                            unfocusedBorderColor = if (activeCredField == "secret") Color(0xFF00FF66) else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeCredField = "secret" }
+                            .testTag("input_cred_secret")
                     )
                     OutlinedTextField(
                         value = credentialNotes,
                         onValueChange = { credentialNotes = it },
+                        readOnly = true,
                         label = { Text("Discreet context notes") },
-                        modifier = Modifier.fillMaxWidth().testTag("input_cred_notes")
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00FF66),
+                            unfocusedBorderColor = if (activeCredField == "notes") Color(0xFF00FF66) else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeCredField = "notes" }
+                            .testTag("input_cred_notes")
                     )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (credentialTitle.isNotBlank() && credentialSecret.isNotBlank()) {
-                            viewModel.saveVaultItem(
-                                type = "CREDENTIAL",
-                                title = credentialTitle,
-                                username = credentialUser,
-                                secret = credentialSecret,
-                                notes = credentialNotes
-                            )
-                            credentialTitle = ""
-                            credentialUser = ""
-                            credentialSecret = ""
-                            credentialNotes = ""
-                            showAddCredentialDialog = false
+
+                    val activeCredValue = when (activeCredField) {
+                        "user" -> credentialUser
+                        "secret" -> credentialSecret
+                        "notes" -> credentialNotes
+                        else -> credentialTitle
+                    }
+                    InAppGboardKeyboard(
+                        text = activeCredValue,
+                        onTextChange = { updated ->
+                            when (activeCredField) {
+                                "user" -> credentialUser = updated
+                                "secret" -> credentialSecret = updated
+                                "notes" -> credentialNotes = updated
+                                else -> credentialTitle = updated
+                            }
+                        },
+                        onSendOrDone = {
+                            activeCredField = when (activeCredField) {
+                                "title" -> "user"
+                                "user" -> "secret"
+                                "secret" -> "notes"
+                                else -> "title"
+                            }
+                        },
+                        sendButtonLabel = if (activeCredField == "notes") "DONE" else "NEXT"
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showAddCredentialDialog = false }) {
+                            Text("Cancel")
                         }
-                    },
-                    modifier = Modifier.testTag("dialog_seal_cred_confirm_button")
-                ) {
-                    Text("Encrypt Record")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddCredentialDialog = false }) {
-                    Text("Cancel")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (credentialTitle.isNotBlank() && credentialSecret.isNotBlank()) {
+                                    viewModel.saveVaultItem(
+                                        type = "CREDENTIAL",
+                                        title = credentialTitle,
+                                        username = credentialUser,
+                                        secret = credentialSecret,
+                                        notes = credentialNotes
+                                    )
+                                    credentialTitle = ""
+                                    credentialUser = ""
+                                    credentialSecret = ""
+                                    credentialNotes = ""
+                                    showAddCredentialDialog = false
+                                }
+                            },
+                            modifier = Modifier.testTag("dialog_seal_cred_confirm_button")
+                        ) {
+                            Text("Encrypt Record")
+                        }
+                    }
                 }
             }
-        )
+        }
     }
 
     if (showBackupRestoreDialog) {
-        AlertDialog(
+        var activeBackupField by remember { mutableStateOf("passphrase") }
+        Dialog(
             onDismissRequest = { showBackupRestoreDialog = false },
-            title = { Text("Zero-Knowledge Cloud Backup Proxy") },
-            text = {
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 16.dp)
+            ) {
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    Text(
+                        text = "Zero-Knowledge Cloud Backup Proxy",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
                     Text(
                         text = "Encrypted snapshots utilize password PBDKF key-derivations. Server proxies never map metadata. Zero-Knowledge backup is absolute.",
                         fontSize = 11.sp,
@@ -2275,17 +2413,16 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                         readOnly = true,
                         label = { Text("Backup Passphrase (Mandatory)") },
                         visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth().testTag("backup_passphrase_input")
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00FF66),
+                            unfocusedBorderColor = if (activeBackupField == "passphrase") Color(0xFF00FF66) else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeBackupField = "passphrase" }
+                            .testTag("backup_passphrase_input")
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    InAppGboardKeyboard(
-                        text = backupPassphrase,
-                        onTextChange = { backupPassphrase = it },
-                        onSendOrDone = {},
-                        sendButtonLabel = "DONE"
-                    )
-
-                    Divider(modifier = Modifier.padding(vertical = 4.dp))
 
                     // ACTIONS LAYOUT
                     Row(
@@ -2351,69 +2488,158 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                     OutlinedTextField(
                         value = inputBackupRestorePayload,
                         onValueChange = { inputBackupRestorePayload = it },
+                        readOnly = true,
                         label = { Text("Paste cipher text payload to restore") },
-                        modifier = Modifier.fillMaxWidth().testTag("import_backup_payload_input")
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                clipboardManager.getText()?.text?.let { pasted ->
+                                    inputBackupRestorePayload = pasted
+                                }
+                            }) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = "Paste cipher payload", modifier = Modifier.size(18.dp))
+                            }
+                        },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00FF66),
+                            unfocusedBorderColor = if (activeBackupField == "payload") Color(0xFF00FF66) else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeBackupField = "payload" }
+                            .testTag("import_backup_payload_input")
                     )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = { showBackupRestoreDialog = false },
-                    modifier = Modifier.testTag("close_backup_dialog")
-                ) {
-                    Text("Dismiss Panel")
+
+                    InAppGboardKeyboard(
+                        text = if (activeBackupField == "payload") inputBackupRestorePayload else backupPassphrase,
+                        onTextChange = { updated ->
+                            if (activeBackupField == "payload") {
+                                inputBackupRestorePayload = updated
+                            } else {
+                                backupPassphrase = updated
+                            }
+                        },
+                        onSendOrDone = {},
+                        sendButtonLabel = "DONE"
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(
+                            onClick = { showBackupRestoreDialog = false },
+                            modifier = Modifier.testTag("close_backup_dialog")
+                        ) {
+                            Text("Dismiss Panel")
+                        }
+                    }
                 }
             }
-        )
+        }
     }
 
     if (showCreateCustomFileDialog) {
-        AlertDialog(
+        var activeFileField by remember { mutableStateOf("name") }
+        Dialog(
             onDismissRequest = { showCreateCustomFileDialog = false },
-            title = { Text("Compose Simulated File") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 8.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 16.dp)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Compose Simulated File (Air-Gap)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
                     OutlinedTextField(
                         value = customFileNameInput,
                         onValueChange = { customFileNameInput = it },
+                        readOnly = true,
                         label = { Text("File Name (e.g. secret.txt)") },
-                        modifier = Modifier.fillMaxWidth().testTag("input_custom_file_name")
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00FF66),
+                            unfocusedBorderColor = if (activeFileField == "name") Color(0xFF00FF66) else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeFileField = "name" }
+                            .testTag("input_custom_file_name")
                     )
                     OutlinedTextField(
                         value = customFileContentInput,
                         onValueChange = { customFileContentInput = it },
+                        readOnly = true,
                         label = { Text("File Content Plaintext") },
-                        modifier = Modifier.fillMaxWidth().testTag("input_custom_file_content")
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = Color(0xFF00FF66),
+                            unfocusedBorderColor = if (activeFileField == "content") Color(0xFF00FF66) else MaterialTheme.colorScheme.outline
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeFileField = "content" }
+                            .testTag("input_custom_file_content")
                     )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (customFileNameInput.isNotBlank() && customFileContentInput.isNotBlank()) {
-                            val sizeInBytes = customFileContentInput.toByteArray().size
-                            val sizeLabel = if (sizeInBytes < 1024) "${sizeInBytes} B" else String.format("%.1f KB", sizeInBytes / 1024.0)
 
-                            droppedFileName = customFileNameInput
-                            droppedFileSizeLabel = sizeLabel
-                            droppedFileContent = customFileContentInput
+                    InAppGboardKeyboard(
+                        text = if (activeFileField == "content") customFileContentInput else customFileNameInput,
+                        onTextChange = { updated ->
+                            if (activeFileField == "content") {
+                                customFileContentInput = updated
+                            } else {
+                                customFileNameInput = updated
+                            }
+                        },
+                        onSendOrDone = {
+                            activeFileField = if (activeFileField == "name") "content" else "name"
+                        },
+                        sendButtonLabel = if (activeFileField == "name") "NEXT" else "DONE"
+                    )
 
-                            customFileNameInput = ""
-                            customFileContentInput = ""
-                            showCreateCustomFileDialog = false
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showCreateCustomFileDialog = false }) {
+                            Text("Cancel")
                         }
-                    },
-                    modifier = Modifier.testTag("confirm_create_custom_file_button")
-                ) {
-                    Text("Simulate Drop")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateCustomFileDialog = false }) {
-                    Text("Cancel")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (customFileNameInput.isNotBlank() && customFileContentInput.isNotBlank()) {
+                                    val sizeInBytes = customFileContentInput.toByteArray().size
+                                    val sizeLabel = if (sizeInBytes < 1024) "${sizeInBytes} B" else String.format("%.1f KB", sizeInBytes / 1024.0)
+
+                                    droppedFileName = customFileNameInput
+                                    droppedFileSizeLabel = sizeLabel
+                                    droppedFileContent = customFileContentInput
+
+                                    customFileNameInput = ""
+                                    customFileContentInput = ""
+                                    showCreateCustomFileDialog = false
+                                }
+                            },
+                            modifier = Modifier.testTag("confirm_create_custom_file_button")
+                        ) {
+                            Text("Simulate Drop")
+                        }
+                    }
                 }
             }
-        )
+        }
     }
 
     if (viewingFileItem != null) {

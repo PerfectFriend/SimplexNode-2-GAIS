@@ -8,6 +8,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.db.AppDatabase
 import com.example.data.model.ActivityLog
+import com.example.data.model.FleetNodeEntry
 import com.example.data.model.SharedFile
 import com.example.data.model.SimplexServer
 import com.example.data.model.VaultItem
@@ -85,6 +86,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _activeOnionAddress = MutableStateFlow("node_simplex_v3.onion")
     val activeOnionAddress: StateFlow<String> = _activeOnionAddress.asStateFlow()
+
+    // --- Universal Wallet & Fleet Command Center State (Stage 9) ---
+    private val _walletEvmAddress = MutableStateFlow("")
+    val walletEvmAddress: StateFlow<String> = _walletEvmAddress.asStateFlow()
+
+    private val _walletEvmFingerprint = MutableStateFlow("")
+    val walletEvmFingerprint: StateFlow<String> = _walletEvmFingerprint.asStateFlow()
+
+    private val _walletLastSignature = MutableStateFlow<RootKeyHub.WalletChallengeSignature?>(null)
+    val walletLastSignature: StateFlow<RootKeyHub.WalletChallengeSignature?> = _walletLastSignature.asStateFlow()
+
+    private val _walletSignatureVerified = MutableStateFlow<Boolean?>(null)
+    val walletSignatureVerified: StateFlow<Boolean?> = _walletSignatureVerified.asStateFlow()
+
+    private val _fleetNodes = MutableStateFlow<List<FleetNodeEntry>>(emptyList())
+    val fleetNodes: StateFlow<List<FleetNodeEntry>> = _fleetNodes.asStateFlow()
 
     // --- Telemetry States directly linked to active seeder telemetry service ---
     val isCharging: StateFlow<Boolean> = TorrentSeederService.isCharging.asStateFlow()
@@ -273,8 +290,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Sovereign Root Key Onboarding check (Stage 8)
         val onboarded = RootKeyHub.isOnboarded(application)
         _isOnboarded.value = onboarded
-        _isPinLocked.value = onboarded
+        _isPinLocked.value = onboarded && !RootKeyHub.isNodeUnlocked()
         _activeOnionAddress.value = RootKeyHub.getOnionAddress(application)
+        if (RootKeyHub.isNodeUnlocked()) {
+            refreshWalletAndFleetFromHub()
+        }
 
         // Prepopulate preferences & basic default configs if needed
         viewModelScope.launch {
@@ -414,8 +434,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isUnlocked.value = true
                 _bip39Mnemonic.value = mnemonic
                 _activeOnionAddress.value = RootKeyHub.getOnionAddress(app)
+                refreshWalletAndFleetFromHub()
                 setupMasterPassword(pin, mnemonic)
-                addSystemLog("ONBOARDING", "Sovereign BIP-39 root keys initialized successfully. Onion: ${_activeOnionAddress.value}", "SUCCESS")
+                addSystemLog("ONBOARDING", "Sovereign BIP-39 root keys initialized successfully. Identity: ${_activeOnionAddress.value}", "SUCCESS")
             }
         }
     }
@@ -428,6 +449,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             RootKeyHub.PinResult.SUCCESS -> {
                 _isPinLocked.value = false
                 _isUnlocked.value = true
+                refreshWalletAndFleetFromHub()
                 unlockVault(enteredPin)
                 addSystemLog("PIN", "Node unlocked successfully via sovereign PIN", "SUCCESS")
             }
@@ -437,6 +459,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isUnlocked.value = false
                 _isPasswordSetup.value = false
                 _bip39Mnemonic.value = ""
+                _walletEvmAddress.value = ""
+                _walletEvmFingerprint.value = ""
+                _walletLastSignature.value = null
+                _walletSignatureVerified.value = null
+                _fleetNodes.value = emptyList()
                 _simplexChatMessages.value = emptyList()
                 addSystemLog("PANIC", "EMERGENCY PANIC WIPE EXECUTED. All node secrets purged.", "CRITICAL")
             }
@@ -452,6 +479,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RootKeyHub.lockNode()
         _isPinLocked.value = true
         _isUnlocked.value = false
+        _walletLastSignature.value = null
+        _walletSignatureVerified.value = null
         addSystemLog("LOCK", "Node locked. Master keys purged from memory.", "PENDING")
     }
 
@@ -1915,6 +1944,144 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         VpnProtocolManager.addCustomProfile(parsed)
         addSystemLog("VPN_IMPORT", "Imported custom ${protocol.displayName} profile: $name", "SUCCESS")
+    }
+
+    // ==========================================
+    // --- UNIVERSAL WALLET & FLEET COMMAND CENTER (STAGE 9) ---
+    // ==========================================
+
+    fun refreshWalletAndFleetFromHub() {
+        if (!RootKeyHub.isNodeUnlocked()) return
+        try {
+            _walletEvmAddress.value = RootKeyHub.deriveWalletEvmAddress()
+            _walletEvmFingerprint.value = RootKeyHub.deriveWalletEvmFingerprint()
+            loadOrInitializeFleetRegistry()
+        } catch (e: Exception) {
+            Log.e("MainViewModel", "Failed deriving wallet/fleet keys from RootKeyHub", e)
+        }
+    }
+
+    fun signWalletChallenge(challenge: String) {
+        if (!RootKeyHub.isNodeUnlocked() || challenge.isBlank()) return
+        try {
+            val sig = RootKeyHub.signWalletChallenge(challenge)
+            _walletLastSignature.value = sig
+            _walletSignatureVerified.value = null
+            addSystemLog("WALLET_SIGN", "Signed challenge via ParanoidX/Wallet/EVM/v1 (${sig.evmAddress.take(10)}...)", "SUCCESS")
+        } catch (e: Exception) {
+            addSystemLog("WALLET_SIGN", "Challenge signing failed: ${e.message}", "FAILED")
+        }
+    }
+
+    fun verifyLastWalletChallenge(): Boolean {
+        val last = _walletLastSignature.value ?: return false
+        val ok = RootKeyHub.verifyWalletChallenge(last.challenge, last.signatureHex)
+        _walletSignatureVerified.value = ok
+        addSystemLog("WALLET_VERIFY", "Local signature verification: ${if (ok) "VALID" else "INVALID"}", if (ok) "SUCCESS" else "FAILED")
+        return ok
+    }
+
+    private fun loadOrInitializeFleetRegistry() {
+        val app = getApplication<Application>()
+        val prefs = app.getSharedPreferences("paranoidx_fleet_registry", Application.MODE_PRIVATE)
+        val rawJson = prefs.getString("fleet_nodes_json", null)
+        val parsed = mutableListOf<FleetNodeEntry>()
+
+        if (!rawJson.isNullOrBlank()) {
+            try {
+                val arr = JSONArray(rawJson)
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    val idx = obj.getInt("nodeIndex")
+                    val crypto = RootKeyHub.deriveFleetNodeInfo(idx)
+                    parsed.add(
+                        FleetNodeEntry(
+                            nodeIndex = idx,
+                            label = obj.optString("label", if (idx == 0) "Primary Sovereign Node" else "Logical Node #$idx"),
+                            domainPath = crypto.domainPath,
+                            nodeId = crypto.nodeId,
+                            fingerprint = crypto.fingerprint,
+                            identityLabel = crypto.identityLabel,
+                            isLocal = idx == 0,
+                            transportHint = obj.optString("transportHint", if (idx == 0) "Local Device (Tor + P2P)" else "Tor / Tailscale Standby"),
+                            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Error reading fleet registry JSON", e)
+            }
+        }
+
+        // Guarantee Node #0 (this physical device) is always present
+        if (parsed.none { it.nodeIndex == 0 }) {
+            val primaryCrypto = RootKeyHub.deriveFleetNodeInfo(0)
+            parsed.add(
+                0,
+                FleetNodeEntry(
+                    nodeIndex = 0,
+                    label = "Primary Sovereign Node",
+                    domainPath = primaryCrypto.domainPath,
+                    nodeId = primaryCrypto.nodeId,
+                    fingerprint = primaryCrypto.fingerprint,
+                    identityLabel = primaryCrypto.identityLabel,
+                    isLocal = true,
+                    transportHint = "Local Device (Tor + SimpleX + P2P)"
+                )
+            )
+        }
+
+        _fleetNodes.value = parsed.sortedBy { it.nodeIndex }
+        saveFleetRegistry(_fleetNodes.value)
+    }
+
+    fun addLogicalFleetNode(label: String, transportHint: String = "Tor / Tailscale Remote") {
+        if (!RootKeyHub.isNodeUnlocked()) return
+        val current = _fleetNodes.value
+        val nextIndex = (current.maxOfOrNull { it.nodeIndex } ?: 0) + 1
+        val crypto = RootKeyHub.deriveFleetNodeInfo(nextIndex)
+        val cleanLabel = label.trim().ifBlank { "Logical Node #$nextIndex" }
+        val entry = FleetNodeEntry(
+            nodeIndex = nextIndex,
+            label = cleanLabel,
+            domainPath = crypto.domainPath,
+            nodeId = crypto.nodeId,
+            fingerprint = crypto.fingerprint,
+            identityLabel = crypto.identityLabel,
+            isLocal = false,
+            transportHint = transportHint.trim().ifBlank { "Tor / Tailscale Remote" }
+        )
+        val updated = (current + entry).sortedBy { it.nodeIndex }
+        _fleetNodes.value = updated
+        saveFleetRegistry(updated)
+        addSystemLog("FLEET", "Provisioned logical node #$nextIndex ('$cleanLabel') via ${crypto.domainPath}", "SUCCESS")
+    }
+
+    fun removeLogicalFleetNode(nodeIndex: Int) {
+        if (nodeIndex == 0) return // Primary device node #0 cannot be removed
+        val updated = _fleetNodes.value.filterNot { it.nodeIndex == nodeIndex }
+        _fleetNodes.value = updated
+        saveFleetRegistry(updated)
+        addSystemLog("FLEET", "Removed logical node #$nodeIndex from local fleet registry", "SUCCESS")
+    }
+
+    private fun saveFleetRegistry(nodes: List<FleetNodeEntry>) {
+        val arr = JSONArray()
+        nodes.forEach { n ->
+            arr.put(
+                JSONObject().apply {
+                    put("nodeIndex", n.nodeIndex)
+                    put("label", n.label)
+                    put("transportHint", n.transportHint)
+                    put("createdAt", n.createdAt)
+                }
+            )
+        }
+        getApplication<Application>()
+            .getSharedPreferences("paranoidx_fleet_registry", Application.MODE_PRIVATE)
+            .edit()
+            .putString("fleet_nodes_json", arr.toString())
+            .apply()
     }
 }
 

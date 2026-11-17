@@ -693,4 +693,80 @@ class ExampleUnitTest {
         assertTrue(onionAddress1.endsWith("node.onion"))
         assertEquals("Onion address must be completely deterministic across restarts", onionAddress1, onionAddress2)
     }
+
+    @Test
+    fun testKeccak256StandardVectorAndEip55() {
+        // Empty input Keccak-256 vector (EVM standard, distinct from NIST SHA3-256)
+        val emptyHash = com.example.data.security.Keccak256.digest(byteArrayOf())
+        val emptyHex = emptyHash.joinToString("") { "%02x".format(it) }
+        assertEquals(
+            "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+            emptyHex
+        )
+
+        // Check EIP-55 mixed-case formatting length and prefix
+        val sampleAddr = ByteArray(20) { (it + 1).toByte() }
+        val eip55 = com.example.data.security.Keccak256.toEip55Address(sampleAddr)
+        assertTrue(eip55.startsWith("0x"))
+        assertEquals(42, eip55.length)
+        assertTrue("EIP-55 address should contain both uppercase/lowercase hex or digits", eip55.drop(2).all { it in "0123456789abcdefABCDEF" })
+    }
+
+    @Test
+    fun testUniversalWalletEvmAddressDeterminismAndSigning() {
+        val mnemonic1 = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val mnemonic2 = "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong"
+        val seed1 = Bip39Utils.deriveSeed(mnemonic1)
+        val seed2 = Bip39Utils.deriveSeed(mnemonic2)
+
+        // 1. Address determinism across re-unlocks
+        val addr1A = RootKeyHub.deriveWalletEvmAddress(seed1)
+        val addr1B = RootKeyHub.deriveWalletEvmAddress(seed1)
+        val addr2 = RootKeyHub.deriveWalletEvmAddress(seed2)
+
+        assertTrue(addr1A.startsWith("0x"))
+        assertEquals(42, addr1A.length)
+        assertEquals("EVM address must be identical across re-unlocks of the same seed", addr1A, addr1B)
+        assertNotEquals("Different seeds must produce different EVM addresses", addr1A, addr2)
+
+        // 2. XFTP and Wallet explicit domain keys must be distinct
+        val xftpKey = RootKeyHub.deriveXftpKey(seed1)
+        val evmKey = RootKeyHub.deriveWalletEvmKey(seed1)
+        assertEquals(32, xftpKey.encoded.size)
+        assertEquals(32, evmKey.size)
+        assertFalse(xftpKey.encoded.contentEquals(evmKey))
+
+        // 3. Challenge signing & verification
+        val challenge = "ParanoidX Fleet Auth #42"
+        val sig = RootKeyHub.signWalletChallenge(challenge, seed1)
+        assertEquals(addr1A, sig.evmAddress)
+        assertTrue(sig.digestHex.startsWith("0x"))
+        assertTrue(sig.signatureHex.startsWith("0x"))
+
+        assertTrue("Valid challenge signature must verify", RootKeyHub.verifyWalletChallenge(challenge, sig.signatureHex, seed1))
+        assertFalse("Tampered challenge must fail verification", RootKeyHub.verifyWalletChallenge("Tampered Challenge", sig.signatureHex, seed1))
+        assertFalse("Different seed must fail verification", RootKeyHub.verifyWalletChallenge(challenge, sig.signatureHex, seed2))
+    }
+
+    @Test
+    fun testFleetNodeDeterministicDerivation() {
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed = Bip39Utils.deriveSeed(mnemonic)
+
+        val node0A = RootKeyHub.deriveFleetNodeInfo(0, seed)
+        val node0B = RootKeyHub.deriveFleetNodeInfo(0, seed)
+        val node1 = RootKeyHub.deriveFleetNodeInfo(1, seed)
+        val node2 = RootKeyHub.deriveFleetNodeInfo(2, seed)
+
+        assertEquals(node0A, node0B)
+        assertEquals("ParanoidX/Fleet/Node/0", node0A.domainPath)
+        assertEquals("ParanoidX/Fleet/Node/1", node1.domainPath)
+        assertEquals("ParanoidX/Fleet/Node/2", node2.domainPath)
+
+        assertNotEquals(node0A.nodeId, node1.nodeId)
+        assertNotEquals(node1.fingerprint, node2.fingerprint)
+        assertTrue(node0A.identityLabel.startsWith("px_") && node0A.identityLabel.endsWith(".onion"))
+        assertTrue(node1.identityLabel.startsWith("px_") && node1.identityLabel.endsWith(".onion"))
+        assertNotEquals(node0A.identityLabel, node1.identityLabel)
+    }
 }

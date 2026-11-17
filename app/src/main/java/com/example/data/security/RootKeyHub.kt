@@ -150,9 +150,13 @@ object RootKeyHub {
         // 1. Zeroize in-memory credentials
         lockNode()
 
-        // 2. Wipe Shared Preferences
+        // 2. Wipe Shared Preferences (root hub, security prefs, fleet registry)
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().clear().apply()
+        val secPrefs = context.getSharedPreferences("simplex_security", Context.MODE_PRIVATE)
+        secPrefs.edit().clear().apply()
+        val fleetPrefs = context.getSharedPreferences("paranoidx_fleet_registry", Context.MODE_PRIVATE)
+        fleetPrefs.edit().clear().apply()
 
         // 3. Wipe and overwrite encrypted databases
         try {
@@ -190,20 +194,37 @@ object RootKeyHub {
 
     fun getActiveMnemonic(): String? = activeMnemonicInMemory
 
+    data class WalletChallengeSignature(
+        val evmAddress: String,
+        val challenge: String,
+        val digestHex: String,
+        val signatureHex: String,
+        val algorithm: String = "HKDF-SHA512 + EIP-191 Keccak-256 Domain Proof",
+        val timestamp: Long = System.currentTimeMillis()
+    )
+
+    data class FleetNodeCryptoInfo(
+        val nodeIndex: Int,
+        val domainPath: String,
+        val nodeId: String,
+        val fingerprint: String,
+        val identityLabel: String
+    )
+
     // --- DOMAIN-SEPARATED KEY DERIVATIONS VIA HKDF-SHA512 ---
 
     /**
      * Derives deterministic Vault AES-256-GCM / SQLCipher key:
      * Domain context: "ParanoidX/Vault/Key/v1"
      */
-    fun deriveVaultKey(salt: ByteArray): SecretKey {
-        val seed = masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+    fun deriveVaultKey(salt: ByteArray, customSeed: ByteArray? = null): SecretKey {
+        val seed = customSeed ?: masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
         val derivedBytes = hkdfExpand(seed, salt, "ParanoidX/Vault/Key/v1".toByteArray(Charsets.UTF_8), 32)
         return SecretKeySpec(derivedBytes, "AES")
     }
 
     /**
-     * Derives deterministic Tor v3 Hidden Service Ed25519 seed:
+     * Derives deterministic Tor Hidden Service key branch:
      * Domain context: "ParanoidX/Tor/HiddenService/v3"
      */
     fun deriveTorOnionKey(customSeed: ByteArray? = null): ByteArray {
@@ -212,12 +233,12 @@ object RootKeyHub {
     }
 
     /**
-     * Calculates the deterministic 56-character v3 .onion address from seed:
-     * Onion address = base32(public_key || checksum || version) + ".onion"
+     * Calculates the deterministic application identity label (`px_...node.onion`) from seed.
+     * Note: This is an application-level deterministic node identity label, not raw Tor v3 wire-format base32(pubkey||checksum||0x03).
      */
     fun deriveTorOnionAddress(customSeed: ByteArray? = null): String {
-        val ed25519Key = deriveTorOnionKey(customSeed)
-        val pubKeyHash = MessageDigest.getInstance("SHA-256").digest(ed25519Key)
+        val torKey = deriveTorOnionKey(customSeed)
+        val pubKeyHash = MessageDigest.getInstance("SHA-256").digest(torKey)
         val rawBytes = pubKeyHash.take(16).toByteArray()
         val hex = rawBytes.joinToString("") { "%02x".format(it) }
         return "px_${hex.take(12)}node.onion"
@@ -227,8 +248,8 @@ object RootKeyHub {
      * Derives deterministic SimpleX E2EE Identity keypair:
      * Domain context: "ParanoidX/SimpleX/Identity/v1"
      */
-    fun deriveSimpleXIdentityKey(): Pair<String, String> {
-        val seed = masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+    fun deriveSimpleXIdentityKey(customSeed: ByteArray? = null): Pair<String, String> {
+        val seed = customSeed ?: masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
         val clientKeyBytes = hkdfExpand(seed, "simplex_salt".toByteArray(Charsets.UTF_8), "ParanoidX/SimpleX/Identity/v1/client".toByteArray(Charsets.UTF_8), 32)
         val peerKeyBytes = hkdfExpand(seed, "simplex_salt".toByteArray(Charsets.UTF_8), "ParanoidX/SimpleX/Identity/v1/peer".toByteArray(Charsets.UTF_8), 32)
 
@@ -241,8 +262,8 @@ object RootKeyHub {
      * Derives deterministic P2P Swarm & Container storage key:
      * Domain context: "ParanoidX/P2P/SwarmKey/v1"
      */
-    fun deriveP2pSwarmKey(): SecretKey {
-        val seed = masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+    fun deriveP2pSwarmKey(customSeed: ByteArray? = null): SecretKey {
+        val seed = customSeed ?: masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
         val p2pKeyBytes = hkdfExpand(seed, "p2p_swarm_salt".toByteArray(Charsets.UTF_8), "ParanoidX/P2P/SwarmKey/v1".toByteArray(Charsets.UTF_8), 32)
         return SecretKeySpec(p2pKeyBytes, "AES")
     }
@@ -251,17 +272,40 @@ object RootKeyHub {
      * Derives deterministic fleet node key for multi-node management (Node #0..N):
      * Domain context: "ParanoidX/Fleet/Node/{index}"
      */
-    fun deriveFleetNodeKey(nodeIndex: Int): ByteArray {
-        val seed = masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+    fun deriveFleetNodeKey(nodeIndex: Int, customSeed: ByteArray? = null): ByteArray {
+        require(nodeIndex >= 0) { "Fleet nodeIndex must be non-negative" }
+        val seed = customSeed ?: masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
         return hkdfExpand(seed, "fleet_salt".toByteArray(Charsets.UTF_8), "ParanoidX/Fleet/Node/$nodeIndex".toByteArray(Charsets.UTF_8), 32)
+    }
+
+    /**
+     * Derives deterministic identity metadata for a logical fleet node (`nodeIndex = 0..N`).
+     */
+    fun deriveFleetNodeInfo(nodeIndex: Int, customSeed: ByteArray? = null): FleetNodeCryptoInfo {
+        val nodeKey = deriveFleetNodeKey(nodeIndex, customSeed)
+        val digest = MessageDigest.getInstance("SHA-256").digest(nodeKey)
+        val hex = digest.joinToString("") { "%02x".format(it) }
+        val fingerprint = hex.take(16).uppercase().chunked(4).joinToString(":")
+        val identityLabel = if (nodeIndex == 0) {
+            deriveTorOnionAddress(customSeed)
+        } else {
+            "px_${hex.take(12)}n$nodeIndex.onion"
+        }
+        return FleetNodeCryptoInfo(
+            nodeIndex = nodeIndex,
+            domainPath = "ParanoidX/Fleet/Node/$nodeIndex",
+            nodeId = "node-${nodeIndex}-${hex.take(8)}",
+            fingerprint = fingerprint,
+            identityLabel = identityLabel
+        )
     }
 
     /**
      * Derives deterministic XFTP Chunk Transfer encryption key:
      * Domain context: "ParanoidX/XFTP/ChunkKey/v1"
      */
-    fun deriveXftpKey(): SecretKey {
-        val seed = masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+    fun deriveXftpKey(customSeed: ByteArray? = null): SecretKey {
+        val seed = customSeed ?: masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
         val xftpKeyBytes = hkdfExpand(seed, "xftp_salt".toByteArray(Charsets.UTF_8), "ParanoidX/XFTP/ChunkKey/v1".toByteArray(Charsets.UTF_8), 32)
         return SecretKeySpec(xftpKeyBytes, "AES")
     }
@@ -270,9 +314,66 @@ object RootKeyHub {
      * Derives deterministic Universal EVM Wallet key:
      * Domain context: "ParanoidX/Wallet/EVM/v1"
      */
-    fun deriveWalletEvmKey(): ByteArray {
-        val seed = masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+    fun deriveWalletEvmKey(customSeed: ByteArray? = null): ByteArray {
+        val seed = customSeed ?: masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
         return hkdfExpand(seed, "evm_salt".toByteArray(Charsets.UTF_8), "ParanoidX/Wallet/EVM/v1".toByteArray(Charsets.UTF_8), 32)
+    }
+
+    /**
+     * Derives deterministic EIP-55 checksummed EVM address (`0x...`) from `ParanoidX/Wallet/EVM/v1`.
+     * Guaranteed identical across re-unlocks of the same BIP-39 Master Seed.
+     */
+    fun deriveWalletEvmAddress(customSeed: ByteArray? = null): String {
+        val evmRoot = deriveWalletEvmKey(customSeed)
+        val pubMaterial = hkdfExpand(evmRoot, "evm_pub_salt".toByteArray(Charsets.UTF_8), "ParanoidX/Wallet/EVM/v1/public".toByteArray(Charsets.UTF_8), 64)
+        val keccakHash = Keccak256.digest(pubMaterial)
+        val addressBytes20 = keccakHash.copyOfRange(12, 32)
+        return Keccak256.toEip55Address(addressBytes20)
+    }
+
+    /**
+     * Returns short deterministic verification fingerprint of the EVM wallet branch.
+     */
+    fun deriveWalletEvmFingerprint(customSeed: ByteArray? = null): String {
+        val evmKey = deriveWalletEvmKey(customSeed)
+        val digest = MessageDigest.getInstance("SHA-256").digest(evmKey)
+        return digest.take(8).joinToString("") { "%02X".format(it) }.chunked(4).joinToString("-")
+    }
+
+    /**
+     * Signs an arbitrary message/challenge using EIP-191 Keccak-256 digest and deterministic
+     * HMAC-SHA512 domain proof keyed by `ParanoidX/Wallet/EVM/v1`.
+     */
+    fun signWalletChallenge(challenge: String, customSeed: ByteArray? = null): WalletChallengeSignature {
+        val evmKey = deriveWalletEvmKey(customSeed)
+        val address = deriveWalletEvmAddress(customSeed)
+        val digest = Keccak256.ethereumMessageHash(challenge)
+        val mac = Mac.getInstance("HmacSHA512")
+        mac.init(SecretKeySpec(evmKey, "HmacSHA512"))
+        mac.update("ParanoidX/Wallet/EVM/v1/personal_sign".toByteArray(Charsets.UTF_8))
+        val sigBytes = mac.doFinal(digest)
+
+        return WalletChallengeSignature(
+            evmAddress = address,
+            challenge = challenge,
+            digestHex = "0x" + digest.joinToString("") { "%02x".format(it) },
+            signatureHex = "0x" + sigBytes.joinToString("") { "%02x".format(it) }
+        )
+    }
+
+    /**
+     * Verifies a wallet challenge signature deterministically against the active seed.
+     */
+    fun verifyWalletChallenge(challenge: String, signatureHex: String, customSeed: ByteArray? = null): Boolean {
+        return try {
+            val expected = signWalletChallenge(challenge, customSeed).signatureHex
+            MessageDigest.isEqual(
+                expected.lowercase().toByteArray(Charsets.UTF_8),
+                signatureHex.trim().lowercase().toByteArray(Charsets.UTF_8)
+            )
+        } catch (_: Exception) {
+            false
+        }
     }
 
     // --- RFC 5869 HKDF-SHA512 IMPLEMENTATION ---

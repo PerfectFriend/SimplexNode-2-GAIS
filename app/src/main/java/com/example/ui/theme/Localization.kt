@@ -8,6 +8,8 @@ object Localization {
             "nav_chat" to "Chat",
             "nav_net" to "Network",
             "nav_files" to "Files",
+            "nav_wallet" to "Wallet",
+            "nav_fleet" to "Fleet",
             "nav_debug" to "Debug",
             
             // General
@@ -169,6 +171,8 @@ object Localization {
             "nav_chat" to "Чат",
             "nav_net" to "Сеть",
             "nav_files" to "Файлы",
+            "nav_wallet" to "Кошелёк",
+            "nav_fleet" to "Флот",
             "nav_debug" to "Отладка",
             
             // General
@@ -330,6 +334,8 @@ object Localization {
             "nav_chat" to "Chat",
             "nav_net" to "Red",
             "nav_files" to "Archivos",
+            "nav_wallet" to "Billetera",
+            "nav_fleet" to "Flota",
             "nav_debug" to "Depurar",
             
             // General
@@ -465,6 +471,8 @@ object Localization {
             "nav_chat" to "Chat",
             "nav_net" to "Réseau",
             "nav_files" to "Fichiers",
+            "nav_wallet" to "Portefeuille",
+            "nav_fleet" to "Flotte",
             "nav_debug" to "Déboguer",
             
             // General
@@ -600,6 +608,8 @@ object Localization {
             "nav_chat" to "Chat",
             "nav_net" to "Netzwerk",
             "nav_files" to "Dateien",
+            "nav_wallet" to "Wallet",
+            "nav_fleet" to "Flotte",
             "nav_debug" to "Debug",
             
             // General
@@ -735,6 +745,8 @@ object Localization {
             "nav_chat" to "会话",
             "nav_net" to "网络",
             "nav_files" to "文件",
+            "nav_wallet" to "钱包",
+            "nav_fleet" to "集群",
             "nav_debug" to "调试",
             
             // General
