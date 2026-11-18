@@ -5,25 +5,26 @@
 
 ---
 
-## Статус на 2026-11-12
+## Статус на 2026-11-18
 
-**Этапы 0–8 — ПРИНЯТЫ**  
-**Этап 9 — В РАБОТЕ** (Universal Wallet + Fleet Command Center)
+**Этапы 0–9 — ПРИНЯТЫ**  
+**Этап 10 — В РАБОТЕ** (темы, радиоточка, RC)
 
-### Аудит Этапа 8
-Коммит: `feat: implement BIP-39 sovereign key derivation`
+### Аудит Этапа 9
+Коммиты:
+- `feat(security): add key derivation for XFTP and EVM`
+- `feat: implement Stage 9 Universal Wallet and Fleet`
 
 Проверено:
-- `RootKeyHub.kt` — setup/unlock/lock, panic wipe, HKDF domains (vault, tor, smp, p2p, fleet/node)
-- `OnboardingScreen.kt` — create/restore, verify words, Master PIN, Panic PIN, InApp keyboard
-- `PinLockScreen.kt` — in-app PIN, panic path
-- `MainAppLayout` — hard gate `!isOnboarded` / `isPinLocked`
-- Unit tests: domain separation + onion determinism (по отчёту)
+- RootKeyHub domains: + `ParanoidX/XFTP/ChunkKey/v1`, `ParanoidX/Wallet/EVM/v1`
+- `Keccak256.kt` + EIP-55 helpers
+- `WalletScreen` / `FleetScreen` / `FleetNode`
+- Drawer entries; chat-home сохранён
+- Remote fleet nodes: STANDBY (NO LINK) — честно
+- Panic wipe включает fleet registry (по отчёту/коду)
 
-Неблокирующие долги → Этап 9:
-- domain labels `xftp`, `wallet/evm`
-- Vault OutlinedTextField residual
-- onion string = application identity label, не полный Tor v3 encoding
+Оговорка (зафиксирована):
+- Wallet MVP использует HMAC domain-proof + HKDF-derived address material, не full secp256k1 spend key. Для MVP Этапа 9 допустимо; для «настоящего» EVM-кошелька — отдельный долг.
 
 ### Текущее задание
-**Этап 9** — см. `CORRESPONDENCE_JOURNAL.md`.
+**Этап 10** — см. `CORRESPONDENCE_JOURNAL.md`.
