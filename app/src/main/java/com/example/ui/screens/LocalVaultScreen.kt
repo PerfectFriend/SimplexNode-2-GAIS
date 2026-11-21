@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalContext
+import com.example.data.security.ClipboardSecurityManager
 import com.example.ui.viewmodel.MainViewModel
 import com.example.ui.theme.Localization
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -133,6 +135,7 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
             isFileVaultUnlocked = false
             fileVaultUnlockPassword = ""
             fileVaultUnlockError = false
+            viewingFileItem = null
             droppedFileName = ""
             droppedFileSizeLabel = ""
             droppedFileContent = ""
@@ -979,10 +982,16 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                                                 fontWeight = FontWeight.Bold
                                             )
                                             IconButton(
-                                                onClick = { clipboardManager.setText(AnnotatedString(item.decryptedValue)) },
+                                                onClick = {
+                                                    ClipboardSecurityManager.copySensitiveSecret(
+                                                        context = context,
+                                                        label = "PXNode Vault Secret",
+                                                        secret = item.decryptedValue
+                                                    )
+                                                },
                                                 modifier = Modifier.size(24.dp)
                                             ) {
-                                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy sensitive", tint = Color(0xFF00FF66), modifier = Modifier.size(16.dp))
+                                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy sensitive (auto-clears 30s)", tint = Color(0xFF00FF66), modifier = Modifier.size(16.dp))
                                             }
                                         }
 
@@ -1971,9 +1980,15 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
                                 }
                                 IconButton(
                                     modifier = Modifier.size(24.dp),
-                                    onClick = { clipboardManager.setText(AnnotatedString(bip39Mnemonic)) }
+                                    onClick = {
+                                        ClipboardSecurityManager.copySensitiveSecret(
+                                            context = context,
+                                            label = "PXNode BIP-39 Seed",
+                                            secret = bip39Mnemonic
+                                        )
+                                    }
                                 ) {
-                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy Seed", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(14.dp))
+                                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy Seed (masked • 30s)", tint = MaterialTheme.colorScheme.tertiary, modifier = Modifier.size(14.dp))
                                 }
                             }
                             Spacer(modifier = Modifier.height(10.dp))
@@ -2681,7 +2696,11 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
             confirmButton = {
                 Button(
                     onClick = {
-                        clipboardManager.setText(AnnotatedString(fileItem.decryptedValue))
+                        ClipboardSecurityManager.copySensitiveSecret(
+                            context = context,
+                            label = "PXNode Decrypted File",
+                            secret = fileItem.decryptedValue
+                        )
                     },
                     modifier = Modifier.testTag("copy_file_content_button")
                 ) {

@@ -1137,4 +1137,42 @@ class ExampleUnitTest {
             httpServer.stop(0)
         }
     }
+
+    @Test
+    fun testStage13SecurityPassFileZeroizeLockAndClipboard() {
+        // 1. Multi-chunk file overwrite & delete (> 128 KB, exceeding single 64 KB buffer)
+        val tmpDir = File(System.getProperty("java.io.tmpdir"), "px_sec_wipe_${System.currentTimeMillis()}")
+        tmpDir.mkdirs()
+        try {
+            val secretFile = File(tmpDir, "local_vault.db-wal")
+            val secretBytes = ByteArray(150 * 1024) { 0x5A.toByte() }
+            secretFile.writeBytes(secretBytes)
+            assertTrue(secretFile.exists())
+            assertEquals(secretBytes.size.toLong(), secretFile.length())
+
+            RootKeyHub.secureOverwriteAndDelete(secretFile)
+            assertFalse("Secret WAL file must be deleted after zero-fill overwrite", secretFile.exists())
+        } finally {
+            tmpDir.deleteRecursively()
+        }
+
+        // 2. RootKeyHub.lockNode() zeroes memory & rejects locked key derivation
+        RootKeyHub.lockNode()
+        assertFalse(RootKeyHub.isNodeUnlocked())
+        assertNull(RootKeyHub.getActiveMnemonic())
+        try {
+            RootKeyHub.deriveWalletSpendPrivateKey()
+            fail("Locked RootKeyHub must reject key derivation")
+        } catch (_: IllegalStateException) {
+            // expected
+        }
+
+        // 3. ClipboardSecurityManager sensitive tag & empty-secret guard
+        assertEquals(
+            "android.content.extra.IS_SENSITIVE",
+            com.example.data.security.ClipboardSecurityManager.EXTRA_IS_SENSITIVE_KEY
+        )
+        assertEquals(30_000L, com.example.data.security.ClipboardSecurityManager.DEFAULT_AUTO_WIPE_MS)
+        assertFalse(com.example.data.security.ClipboardSecurityManager.hasPendingAutoWipe())
+    }
 }

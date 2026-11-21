@@ -1,7 +1,7 @@
 # PXNode — Release Candidate 1 (`RC1`) Engineering Notes
 **Application ID:** `com.aistudio.pxnode2.vxytqp`
 **Launcher Name:** `PXNode`
-**Stage:** Stage 12 (`RC1 Closure` / Feature Freeze)
+**Stage:** Stage 13.1 (Post-RC1 Security Pass • Feature Freeze Maintained)
 
 ---
 
@@ -9,6 +9,10 @@
 - **Root Cryptography & Key Hierarchy (`RootKeyHub`, `Bip39Utils`, `CryptoUtils`)**
   - 12-word BIP-39 mnemonic generation/validation, 512-bit PBKDF2 seed derivation, RFC 5869 HKDF-SHA512 domain-separated key derivation across Vault, Tor, SimpleX, P2P, XFTP, Wallet, and Fleet slots.
   - SQLCipher encrypted Room storage (`DbEncryptionManager` + AES-256 Keystore wrapping) and Sovereign PIN + Emergency Panic Wipe gate.
+  - **Iteration 13.1 Security Hardening (`ClipboardSecurityManager`, `RootKeyHub`, `DbEncryptionManager`, `backup_rules.xml`, `data_extraction_rules.xml`):**
+    - Sensitive copies (decrypted vault secrets, BIP-39 mnemonic seed, decrypted file contents) attach `android.content.extra.IS_SENSITIVE` (Android 13+ OS preview suppression) and schedule a 30-second clipboard auto-wipe.
+    - Full-file chunked zeroization + `fd.sync()` before deletion during panic wipe across Room DB (`local_vault.db`, `-wal`, `-shm`, `-journal`), `tordata`, and `p2p_container`, plus synchronous `.commit()` clears of security `SharedPreferences`, in-memory `SecretKey` zeroization, Room table purge, clipboard wipe, and closing open decrypted dialogs on lock/panic.
+    - Explicit domain exclusions in `backup_rules.xml` and `data_extraction_rules.xml` (cloud backup & Android 12+ D2D transfer disabled alongside `android:allowBackup="false"`).
 - **Universal Dual-Mode Wallet (`Secp256k1Engine`, `Keccak256`, `WalletScreen`)**
   - Strictly separated `PROOF` mode (HMAC-SHA512 domain `ParanoidX/Wallet/EVM/v1`) and `SPEND` mode (true `secp256k1` ECDSA RFC 6979 deterministic signing, EIP-2 low-S normalization, Ethereum EIP-55 address, 65-byte `(r, s, v)` signature verification).
 - **Tor Onion v3 & Live ControlPort (`TorOnionV3`, `TorControlClient`, `TorNetworkManager`)**
@@ -40,10 +44,12 @@
 
 ## 3. RC1 Freeze Policy & Manual Smoke Checklist
 - **Policy:** Feature freeze effective upon RC1 acceptance. Post-RC1 commits are strictly **bugfix & security fix only**.
-- **RC1 Smoke Path (Verified in JVM `ExampleUnitTest.testRc1EndToEndSmokePath`):**
-  1. Generate/validate BIP-39 mnemonic & derive domain keys via `RootKeyHub`.
-  2. Unlock via Sovereign PIN (`PinLockScreen` + `InAppGboardKeyboard`).
-  3. Toggle network/Tor telemetry and observe `RadioPointEvaluator` state transitions (`SILENCE` -> `DEGRADED` -> `ON AIR` -> `ALARM`).
-  4. Send SimpleX chat message -> verify `SmpProtocolEngine` HTTP/SOCKS5 path and honest offline failure.
-  5. Switch Wallet mode `PROOF` (HMAC) <-> `SPEND` (`secp256k1` ECDSA) and sign/verify challenges.
-  6. Probe VPN endpoint in Network → VPN Suite (`Ping` returns real TCP latency or `UNREACHABLE`) & probe Fleet remote slot (`lastProbeTimestamp` recorded).
+- **RC1 & Post-RC1 Smoke / Security Checks (`ExampleUnitTest`: 28/28 PASS):**
+  - `testRc1EndToEndSmokePath`:
+    1. Generate/validate BIP-39 mnemonic & derive domain keys via `RootKeyHub`.
+    2. Unlock via Sovereign PIN (`PinLockScreen` + `InAppGboardKeyboard`).
+    3. Toggle network/Tor telemetry and observe `RadioPointEvaluator` state transitions (`SILENCE` -> `DEGRADED` -> `ON AIR` -> `ALARM`).
+    4. Send SimpleX chat message -> verify `SmpProtocolEngine` HTTP/SOCKS5 path and honest offline failure.
+    5. Switch Wallet mode `PROOF` (HMAC) <-> `SPEND` (`secp256k1` ECDSA) and sign/verify challenges.
+    6. Probe VPN endpoint in Network → VPN Suite (`Ping` returns real TCP latency or `UNREACHABLE`) & probe Fleet remote slot (`lastProbeTimestamp` recorded).
+  - `testStage13SecurityPassFileZeroizeLockAndClipboard`: Verifies multi-chunk (>128KB) full-file zeroization & deletion, `RootKeyHub.lockNode()` key-derivation guard, and `ClipboardSecurityManager` sensitive extra & 30s auto-wipe defaults.

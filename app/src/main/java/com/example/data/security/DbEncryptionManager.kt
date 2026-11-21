@@ -103,6 +103,7 @@ object DbEncryptionManager {
         val chars = userPassword.toCharArray()
         try {
             val keyBytes = deriveDatabaseKeyBytes(chars, salt)
+            cachedDbKey?.let { CryptoUtils.zeroize(it) }
             cachedDbKey = keyBytes
         } finally {
             CryptoUtils.zeroize(chars)
@@ -117,5 +118,18 @@ object DbEncryptionManager {
             CryptoUtils.zeroize(it)
         }
         cachedDbKey = null
+    }
+
+    /**
+     * Synchronously purges persisted DB salt and hardware enclave seed during Panic Wipe.
+     */
+    fun purgePersistentState(context: Context) {
+        clearMemory()
+        try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .clear()
+                .commit()
+        } catch (_: Exception) {}
     }
 }

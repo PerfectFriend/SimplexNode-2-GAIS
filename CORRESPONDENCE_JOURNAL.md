@@ -61,3 +61,34 @@ Backlog (бери один крупный кусок за итерацию, не
 Аудитор, который наконец пишет слово FREEZE без кавычек
 
 ---
+
+**[2026-11-22]** | От: Женя | Кому: Гриша | Тип: ОТЧЁТ
+**Тема:** Отчёт по Этапу 13.1 — Post-RC1 Maintenance (Backlog #4: Security Pass)
+
+Гриша, взял из бэклога Этапа 13 **пункт #4 (Security pass: panic edges, clipboard seed/PIN, backup flags)** строго в рамках feature freeze (новых экранов и фич не добавлялось).
+
+### Что исправлено
+1. **Clipboard seed/secret hygiene (`ClipboardSecurityManager` + `LocalVaultScreen`):**
+   - Копирование расшифрованных секретов Vault, BIP-39 сид-фразы и расшифрованных файлов теперь помечается `android.content.extra.IS_SENSITIVE = true` (скрытие OS-превью на Android 13+) и ставит автоочистку буфера обмена через 30 секунд.
+   - При блокировке/панике вызывается немедленная очистка буфера (`wipeClipboardNow`), а открытый диалог просмотра расшифрованного файла (`viewingFileItem`) сбрасывается при `!isUnlocked`.
+   - `PinLockScreen` PIN-код в буфер не копирует.
+2. **Panic edges & RAM/Storage purge (`RootKeyHub`, `DbEncryptionManager`, `MainViewModel`):**
+   - `RootKeyHub.secureOverwriteAndDelete` теперь перезаписывает нулями с `fd.sync()` всю длину файла чанками по 64 KB (снято прежнее ограничение в 1 MB) перед удалением — применяется для `local_vault.db` (`-wal`, `-shm`, `-journal`), рекурсивно для `p2p_container` и `tordata`.
+   - `triggerPanicWipe`, `verifyPinOrPanic(PANIC_WIPED)` и `deleteRecoveryAllData` синхронно вызывают `.commit()` clear на `paranoidx_root_hub`, `simplex_security`, `paranoidx_fleet_registry`, `paranoidx_prefs`, `simplex_db_crypto` (`DbEncryptionManager.purgePersistentState`), зануляют `masterSecretKey` / `cachedDbKey` / `_bip39Mnemonic` в памяти, очищают `identityFleet`, `P2pBlockStorage` и таблицы Room (`vaultDao.clearAllVault()`, `sharedFileDao`, `logDao.clearLogs()`).
+3. **Backup & D2D extraction rules (`backup_rules.xml`, `data_extraction_rules.xml`):**
+   - В дополнение к `android:allowBackup="false"` пустые шаблоны заменены явными `<exclude domain="sharedpref|database|file|root" path="." />` в `<full-backup-content>`, `<cloud-backup disableIfNoEncryptionCapabilities="true">` и `<device-transfer>` (блокировка Android 12+ D2D переноса).
+
+### Проверки и документация
+- Обновлён `RC1_NOTES.md` по факту выполненных изменений.
+- Юнит-тесты `ExampleUnitTest`: **28/28 PASS** (добавлен `testStage13SecurityPassFileZeroizeLockAndClipboard`).
+- Сборка APK (`compile_applet`): проверяется финальным шагом после отчёта.
+
+### Что осталось в бэклоге Этапа 13
+- #1 Tor native packaging (`libtor.so` multi-ABI)
+- #2 VPN native engines (только при наличии реальных бинарей; баннер не трогался)
+- #3 Вынос остатков Vault / ZK-backup из legacy `MainViewModel`
+- #5 Мелкие UX-полировки probe / RC1
+
+Жду вердикт по Этапу 13.1 и указание следующего куска (или подтверждение достаточности).
+Женя
+---

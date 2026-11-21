@@ -21,6 +21,7 @@ import com.example.data.model.FleetNodeEntry
 import com.example.data.model.SharedFile
 import com.example.data.model.SimplexServer
 import com.example.data.model.VaultItem
+import com.example.data.security.ClipboardSecurityManager
 import com.example.data.security.CryptoUtils
 import com.example.data.security.DbEncryptionManager
 import com.example.data.security.RootKeyHub
@@ -508,13 +509,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 addSystemLog("PIN", "Node unlocked successfully via sovereign PIN", "SUCCESS")
             }
             RootKeyHub.PinResult.PANIC_WIPED -> {
+                clearSensitiveSessionMemory()
                 _isOnboarded.value = false
                 _isPinLocked.value = true
                 _isUnlocked.value = false
                 _isPasswordSetup.value = false
-                _bip39Mnemonic.value = ""
+                _simplexOnionAddress.value = "px_uninitialized_label.onion"
+                identityFleet.setUnitializedLabels()
                 identityFleet.clearOnLockOrWipe()
                 _simplexChatMessages.value = emptyList()
+                P2pBlockStorage.clear()
+                ClipboardSecurityManager.wipeClipboardNow(app)
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        vaultDao.clearAllVault()
+                        sharedFileDao.getAllSharedFiles().first().forEach { f -> sharedFileDao.deleteSharedFile(f.id) }
+                        logDao.clearLogs()
+                    } catch (_: Exception) {}
+                }
                 addSystemLog("PANIC", "EMERGENCY PANIC WIPE EXECUTED. All node secrets purged.", "CRITICAL")
             }
             RootKeyHub.PinResult.INVALID -> {
@@ -524,13 +536,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return result
     }
 
-    // [REAL] Stage 8: Lock node and purge master secrets from memory
+    // [REAL] Stage 8 + 13: Lock node, zeroize master secrets from memory, and wipe clipboard
     fun lockNode() {
         RootKeyHub.lockNode()
+        clearSensitiveSessionMemory()
+        DbEncryptionManager.clearMemory()
+        ClipboardSecurityManager.wipeClipboardNow(getApplication())
         _isPinLocked.value = true
         _isUnlocked.value = false
         identityFleet.clearOnLockOrWipe()
-        addSystemLog("LOCK", "Node locked. Master keys purged from memory.", "PENDING")
+        addSystemLog("LOCK", "Node locked. Master keys and clipboard purged.", "PENDING")
+    }
+
+    private fun clearSensitiveSessionMemory() {
+        masterSecretKey?.encoded?.let { CryptoUtils.zeroize(it) }
+        masterSecretKey = null
+        cachedPassphraseHash = ""
+        _bip39Mnemonic.value = ""
     }
 
     fun unlockVault(password: String): Boolean {
@@ -628,12 +650,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun lockVault() {
-        masterSecretKey = null
-        _bip39Mnemonic.value = ""
+        clearSensitiveSessionMemory()
         _isUnlocked.value = false
         DbEncryptionManager.clearMemory()
+        ClipboardSecurityManager.wipeClipboardNow(getApplication())
         resetInactivityTimer()
-        addSystemLog("VAULT", "Vault locked. Memory keys zeroized.", "SUCCESS")
+        addSystemLog("VAULT", "Vault locked. Memory keys and clipboard zeroized.", "SUCCESS")
     }
 
     fun resetInactivityTimer() {
@@ -641,23 +663,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteRecoveryAllData() {
+        val app = getApplication<Application>()
+        clearSensitiveSessionMemory()
+        _isUnlocked.value = false
+        _isPasswordSetup.value = false
+        _isOnboarded.value = false
+        _isPinLocked.value = true
+        _simplexOnionAddress.value = "px_uninitialized_label.onion"
+        identityFleet.setUnitializedLabels()
+        identityFleet.clearOnLockOrWipe()
+        _simplexChatMessages.value = emptyList()
+        RootKeyHub.triggerPanicWipe(app)
+        P2pBlockStorage.clear()
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 vaultDao.clearAllVault()
-                
-                // Fetch the list of shared files once and delete each file
                 val files = sharedFileDao.getAllSharedFiles().first()
                 files.forEach { f -> sharedFileDao.deleteSharedFile(f.id) }
-                
-                _isUnlocked.value = false
-                _isPasswordSetup.value = false
-                masterSecretKey = null
-                getApplication<Application>().getSharedPreferences("simplex_security", Application.MODE_PRIVATE)
-                    .edit().clear().apply()
-                addSystemLog("VAULT", "Full hardware purge triggered. All files and encryption databases wiped representationally.", "SUCCESS")
+                logDao.clearLogs()
             } catch (e: Exception) {
                 Log.e("MainViewModel", "Purge operation failed", e)
-                addSystemLog("VAULT", "Hardware purge error: ${e.localizedMessage}", "FAILED")
             }
         }
     }

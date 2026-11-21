@@ -150,36 +150,57 @@ object RootKeyHub {
         // 1. Zeroize in-memory credentials
         lockNode()
 
-        // 2. Wipe Shared Preferences (root hub, security prefs, fleet registry)
-        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().clear().apply()
-        val secPrefs = context.getSharedPreferences("simplex_security", Context.MODE_PRIVATE)
-        secPrefs.edit().clear().apply()
-        val fleetPrefs = context.getSharedPreferences("paranoidx_fleet_registry", Context.MODE_PRIVATE)
-        fleetPrefs.edit().clear().apply()
+        // 2. Immediately clear system clipboard if it contains sensitive seed/secret material
+        ClipboardSecurityManager.wipeClipboardNow(context)
 
-        // 3. Wipe and overwrite encrypted databases
-        try {
-            val dbFile = context.getDatabasePath("local_vault.db")
-            if (dbFile.exists()) {
-                overwriteAndZeroizeFile(dbFile)
-            }
-            val dbWal = context.getDatabasePath("local_vault.db-wal")
-            if (dbWal.exists()) {
-                overwriteAndZeroizeFile(dbWal)
-            }
-        } catch (_: Exception) {}
+        // 3. Synchronously purge all sensitive SharedPreferences (using commit() rather than async apply())
+        listOf(
+            PREFS_NAME,
+            "simplex_security",
+            "paranoidx_fleet_registry",
+            "paranoidx_prefs"
+        ).forEach { prefName ->
+            try {
+                context.getSharedPreferences(prefName, Context.MODE_PRIVATE)
+                    .edit()
+                    .clear()
+                    .commit()
+            } catch (_: Exception) {}
+        }
 
-        // 4. Wipe P2P storage blocks
-        try {
-            val p2pDir = File(context.filesDir, "p2p_container")
-            if (p2pDir.exists()) {
-                p2pDir.listFiles()?.forEach { file ->
-                    overwriteAndZeroizeFile(file)
+        // 4. Purge SQLCipher enclave key/salt & volatile DB key
+        DbEncryptionManager.purgePersistentState(context)
+
+        // 5. Overwrite and delete encrypted database + WAL/SHM/Journal artifacts
+        listOf("local_vault.db", "local_vault.db-wal", "local_vault.db-shm", "local_vault.db-journal").forEach { dbName ->
+            try {
+                val f = context.getDatabasePath(dbName)
+                if (f.exists()) {
+                    secureOverwriteAndDelete(f)
                 }
-                p2pDir.deleteRecursively()
+            } catch (_: Exception) {}
+        }
+
+        // 6. Wipe P2P storage blocks and Tor runtime secrets (control_auth_cookie, hidden_service)
+        listOf("p2p_container", "tordata").forEach { dirName ->
+            try {
+                val dir = File(context.filesDir, dirName)
+                if (dir.exists()) {
+                    wipeDirectoryRecursively(dir)
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun wipeDirectoryRecursively(dir: File) {
+        dir.listFiles()?.forEach { child ->
+            if (child.isDirectory) {
+                wipeDirectoryRecursively(child)
+            } else {
+                secureOverwriteAndDelete(child)
             }
-        } catch (_: Exception) {}
+        }
+        dir.delete()
     }
 
     /**
@@ -506,14 +527,30 @@ object RootKeyHub {
         return mac.doFinal(pin.toByteArray(Charsets.UTF_8))
     }
 
-    private fun overwriteAndZeroizeFile(file: File) {
+    /**
+     * Overwrites the entire file in 64KB zero blocks before unlinking, regardless of file size.
+     */
+    fun secureOverwriteAndDelete(file: File) {
         try {
             if (file.exists() && file.isFile) {
-                val length = file.length().coerceAtMost(1024 * 1024).toInt()
-                val zeros = ByteArray(length)
-                file.outputStream().use { it.write(zeros) }
+                val totalLength = file.length()
+                if (totalLength > 0L) {
+                    val zeroChunk = ByteArray(64 * 1024)
+                    java.io.RandomAccessFile(file, "rw").use { raf ->
+                        raf.seek(0L)
+                        var remaining = totalLength
+                        while (remaining > 0L) {
+                            val toWrite = remaining.coerceAtMost(zeroChunk.size.toLong()).toInt()
+                            raf.write(zeroChunk, 0, toWrite)
+                            remaining -= toWrite
+                        }
+                        raf.fd.sync()
+                    }
+                }
                 file.delete()
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+            try { file.delete() } catch (_: Exception) {}
+        }
     }
 }
