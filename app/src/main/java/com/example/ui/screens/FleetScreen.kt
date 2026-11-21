@@ -53,6 +53,7 @@ fun FleetScreen(viewModel: MainViewModel) {
 
     var copiedNodeIndex by remember { mutableStateOf<Int?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
+    var probeTargetNode by remember { mutableStateOf<FleetNodeEntry?>(null) }
 
     val primaryLocalStatus = if (torStatus == "CONNECTED" || activePeers > 0) {
         FleetNodeStatus.ACTIVE_LOCAL
@@ -254,7 +255,12 @@ fun FleetScreen(viewModel: MainViewModel) {
 
         // 2. FLEET NODE LIST
         items(fleetNodes, key = { it.nodeIndex }) { node ->
-            val honestStatus = if (node.isLocal) primaryLocalStatus else FleetNodeStatus.STANDBY_REMOTE
+            val honestStatus = when {
+                node.isLocal -> primaryLocalStatus
+                node.linkProbeStatus == "REACHABLE" -> FleetNodeStatus.LINK_REACHABLE
+                node.linkProbeStatus == "UNREACHABLE" -> FleetNodeStatus.LINK_UNREACHABLE
+                else -> FleetNodeStatus.STANDBY_REMOTE
+            }
             FleetNodeCard(
                 node = node,
                 status = honestStatus,
@@ -262,6 +268,16 @@ fun FleetScreen(viewModel: MainViewModel) {
                 onCopyFingerprint = {
                     clipboardManager.setText(AnnotatedString("${node.nodeId} | ${node.fingerprint} | ${node.identityLabel}"))
                     copiedNodeIndex = node.nodeIndex
+                },
+                onProbeLink = {
+                    if (node.remoteEndpoint.isNotBlank()) {
+                        viewModel.probeRemoteFleetNode(node.nodeIndex, node.remoteEndpoint)
+                    } else {
+                        probeTargetNode = node
+                    }
+                },
+                onConfigureEndpoint = {
+                    probeTargetNode = node
                 },
                 onRemove = {
                     viewModel.removeLogicalFleetNode(node.nodeIndex)
@@ -274,9 +290,20 @@ fun FleetScreen(viewModel: MainViewModel) {
         AddLogicalFleetNodeDialog(
             nextIndex = (fleetNodes.maxOfOrNull { it.nodeIndex } ?: 0) + 1,
             onDismiss = { showAddDialog = false },
-            onConfirm = { label, transportHint ->
-                viewModel.addLogicalFleetNode(label, transportHint)
+            onConfirm = { label, transportHint, endpoint ->
+                viewModel.addLogicalFleetNode(label, transportHint, endpoint)
                 showAddDialog = false
+            }
+        )
+    }
+
+    probeTargetNode?.let { target ->
+        ProbeFleetEndpointDialog(
+            node = target,
+            onDismiss = { probeTargetNode = null },
+            onProbe = { endpoint ->
+                viewModel.probeRemoteFleetNode(target.nodeIndex, endpoint)
+                probeTargetNode = null
             }
         )
     }
@@ -324,12 +351,16 @@ private fun FleetNodeCard(
     status: FleetNodeStatus,
     isCopied: Boolean,
     onCopyFingerprint: () -> Unit,
+    onProbeLink: () -> Unit,
+    onConfigureEndpoint: () -> Unit,
     onRemove: () -> Unit
 ) {
     val palette = LocalParanoidPalette.current
     val statusColor = when (status) {
         FleetNodeStatus.ACTIVE_LOCAL -> palette.accent
         FleetNodeStatus.DEGRADED_LOCAL -> palette.secondaryAccent
+        FleetNodeStatus.LINK_REACHABLE -> palette.accent
+        FleetNodeStatus.LINK_UNREACHABLE -> palette.danger
         FleetNodeStatus.STANDBY_REMOTE -> palette.warning
         FleetNodeStatus.UNCONFIGURED_REMOTE -> palette.textMuted
     }
@@ -426,7 +457,7 @@ private fun FleetNodeCard(
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
-                    text = "IDENTITY LABEL: ${node.identityLabel}",
+                    text = "IDENTITY LABEL (NON-WIRE): ${node.identityLabel}",
                     fontSize = 10.sp,
                     color = palette.textSecondary,
                     fontFamily = FontFamily.Monospace
@@ -437,6 +468,14 @@ private fun FleetNodeCard(
                     color = palette.textMuted,
                     fontFamily = FontFamily.Monospace
                 )
+                if (node.remoteEndpoint.isNotBlank() || node.lastProbeDetail.isNotBlank()) {
+                    Text(
+                        text = "LINK PROBE: ${node.remoteEndpoint.ifBlank { "not set" }} • ${node.linkProbeStatus}${node.lastProbeRttMs?.let { " (${it}ms)" } ?: ""}",
+                        fontSize = 10.sp,
+                        color = if (node.linkProbeStatus == "REACHABLE") palette.accent else palette.textMuted,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -464,6 +503,35 @@ private fun FleetNodeCard(
 
                 if (!node.isLocal) {
                     OutlinedButton(
+                        onClick = onProbeLink,
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("btn_probe_fleet_node_${node.nodeIndex}"),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.secondaryAccent)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.NetworkCheck,
+                            contentDescription = "Probe Remote Link",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Probe", fontSize = 11.sp)
+                    }
+
+                    IconButton(
+                        onClick = onConfigureEndpoint,
+                        modifier = Modifier
+                            .size(48.dp)
+                            .testTag("btn_edit_fleet_endpoint_${node.nodeIndex}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SettingsEthernet,
+                            contentDescription = "Configure Endpoint",
+                            tint = palette.textSecondary
+                        )
+                    }
+
+                    OutlinedButton(
                         onClick = onRemove,
                         modifier = Modifier
                             .heightIn(min = 48.dp)
@@ -486,12 +554,13 @@ private fun FleetNodeCard(
 private fun AddLogicalFleetNodeDialog(
     nextIndex: Int,
     onDismiss: () -> Unit,
-    onConfirm: (label: String, transportHint: String) -> Unit
+    onConfirm: (label: String, transportHint: String, remoteEndpoint: String) -> Unit
 ) {
     val palette = LocalParanoidPalette.current
     var label by remember { mutableStateOf("Relay Node #$nextIndex") }
     var transportHint by remember { mutableStateOf("Tor Hidden Relay") }
-    var activeField by remember { mutableStateOf("label") } // "label" or "transport"
+    var remoteEndpoint by remember { mutableStateOf("") }
+    var activeField by remember { mutableStateOf("label") } // "label", "transport", "endpoint"
 
     val transportPresets = listOf(
         "Tor Hidden Relay",
@@ -526,7 +595,7 @@ private fun AddLogicalFleetNodeDialog(
                     color = palette.textSecondary
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 OutlinedTextField(
                     value = label,
@@ -552,6 +621,20 @@ private fun AddLogicalFleetNodeDialog(
                         .onFocusChanged { if (it.isFocused) activeField = "transport" }
                         .clickable { activeField = "transport" }
                         .testTag("fleet_node_transport_input")
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = remoteEndpoint,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Remote Endpoint (host:port / .onion, опц.)", fontSize = 11.sp) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { if (it.isFocused) activeField = "endpoint" }
+                        .clickable { activeField = "endpoint" }
+                        .testTag("fleet_node_endpoint_input")
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -587,7 +670,7 @@ private fun AddLogicalFleetNodeDialog(
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
-                        onClick = { onConfirm(label, transportHint) },
+                        onClick = { onConfirm(label, transportHint, remoteEndpoint) },
                         colors = ButtonDefaults.buttonColors(containerColor = palette.accent),
                         modifier = Modifier
                             .heightIn(min = 48.dp)
@@ -599,15 +682,102 @@ private fun AddLogicalFleetNodeDialog(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                val currentText = if (activeField == "label") label else transportHint
+                val currentText = when (activeField) {
+                    "label" -> label
+                    "transport" -> transportHint
+                    else -> remoteEndpoint
+                }
                 InAppGboardKeyboard(
                     text = currentText,
                     onTextChange = { updated ->
-                        if (activeField == "label") label = updated else transportHint = updated
+                        when (activeField) {
+                            "label" -> label = updated
+                            "transport" -> transportHint = updated
+                            else -> remoteEndpoint = updated
+                        }
                     },
-                    onSendOrDone = { onConfirm(label, transportHint) },
+                    onSendOrDone = { onConfirm(label, transportHint, remoteEndpoint) },
                     sendButtonLabel = "ADD",
                     modifier = Modifier.testTag("fleet_add_inapp_keyboard")
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProbeFleetEndpointDialog(
+    node: FleetNodeEntry,
+    onDismiss: () -> Unit,
+    onProbe: (endpoint: String) -> Unit
+) {
+    val palette = LocalParanoidPalette.current
+    var endpoint by remember { mutableStateOf(node.remoteEndpoint.ifBlank { "127.0.0.1:9050" }) }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            color = palette.surface,
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+                .border(1.dp, palette.border, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "PROBE REMOTE LINK • NODE #${node.nodeIndex}",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = palette.secondaryAccent,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Реальная проверка TCP/SOCKS5 доступности без симуляции.",
+                    fontSize = 11.sp,
+                    color = palette.textSecondary
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                OutlinedTextField(
+                    value = endpoint,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Endpoint (host:port)", fontSize = 11.sp) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("fleet_probe_endpoint_input")
+                )
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Отмена", color = palette.textSecondary)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = { onProbe(endpoint) },
+                        colors = ButtonDefaults.buttonColors(containerColor = palette.secondaryAccent),
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .testTag("btn_confirm_probe_fleet")
+                    ) {
+                        Text("Проверить", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                InAppGboardKeyboard(
+                    text = endpoint,
+                    onTextChange = { endpoint = it },
+                    onSendOrDone = { onProbe(endpoint) },
+                    sendButtonLabel = "PROBE",
+                    modifier = Modifier.testTag("fleet_probe_inapp_keyboard")
                 )
             }
         }

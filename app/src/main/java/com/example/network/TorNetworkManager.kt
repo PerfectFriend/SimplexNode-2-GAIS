@@ -39,7 +39,7 @@ object TorNetworkManager {
     val currentExitIp = _currentExitIp.asStateFlow()
 
     private val _torCircuitNodes = MutableStateFlow<List<String>>(
-        listOf("Guard: 185.220.101.5 (DE)", "Middle: 198.51.100.22 (NL)", "Exit: 192.42.116.16 (CH)")
+        listOf("Standby (No active Tor ControlPort)")
     )
     val torCircuitNodes = _torCircuitNodes.asStateFlow()
 
@@ -49,7 +49,10 @@ object TorNetworkManager {
     fun log(msg: String) {
         val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
         val entry = "[$time] $msg"
-        Log.i(TAG, entry)
+        try {
+            Log.i(TAG, entry)
+        } catch (_: Throwable) {
+        }
         _torLogs.value = listOf(entry) + _torLogs.value.take(49)
     }
 
@@ -118,21 +121,38 @@ object TorNetworkManager {
     }
 
     /**
-     * Rotates Tor circuit identities (simulated signal NEWNYM over Tor control port).
+     * [REAL] Отправляет SIGNAL NEWNYM через Tor ControlPort и обновляет реальную таблицу цепочек.
+     * Если ControlPort недоступен (например FallbackSimulation без libtor.so), честно сообщает об этом без .random().
      */
-    suspend fun rotateTorIdentity(controlPort: Int = DEFAULT_TOR_CONTROL_PORT): Boolean = withContext(Dispatchers.IO) {
-        log("SIGNAL NEWNYM: Requesting fresh Tor circuit identity...")
-        kotlinx.coroutines.delay(800)
-        
-        val randomExits = listOf(
-            listOf("Guard: 104.244.76.13 (LU)", "Middle: 185.100.86.128 (SE)", "Exit: 195.176.3.23 (IS)"),
-            listOf("Guard: 51.15.82.11 (FR)", "Middle: 193.189.100.4 (NL)", "Exit: 178.17.170.198 (MD)"),
-            listOf("Guard: 89.234.157.254 (FI)", "Middle: 194.26.29.112 (CH)", "Exit: 185.220.102.8 (DE)")
+    suspend fun rotateTorIdentity(
+        controlPort: Int = DEFAULT_TOR_CONTROL_PORT,
+        cookieFile: java.io.File? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        log("SIGNAL NEWNYM: Dispatching control command to 127.0.0.1:$controlPort...")
+        val (ok, reply) = com.example.network.tor.TorControlClient.sendSignalNewNym(
+            host = DEFAULT_TOR_HOST,
+            port = controlPort,
+            cookieFile = cookieFile
         )
-        val selected = randomExits.random()
-        _torCircuitNodes.value = selected
-        _currentExitIp.value = selected.last().substringAfter("Exit: ").substringBefore(" ")
-        log("New Tor circuit established: ${selected.joinToString(" -> ")}")
+        if (!ok) {
+            log("NEWNYM_UNAVAILABLE: $reply")
+            _torCircuitNodes.value = listOf("No Tor ControlPort ($reply)")
+            _currentExitIp.value = "ControlPort offline"
+            return@withContext false
+        }
+
+        val telemetry = com.example.network.tor.TorControlClient.queryTelemetry(
+            host = DEFAULT_TOR_HOST,
+            port = controlPort,
+            cookieFile = cookieFile
+        )
+        if (telemetry.circuitSummaries.isNotEmpty()) {
+            _torCircuitNodes.value = telemetry.circuitSummaries.take(3)
+        } else {
+            _torCircuitNodes.value = listOf("NEWNYM ACK • rebuilding circuits")
+        }
+        _currentExitIp.value = "Tor Live (${telemetry.builtCircuits} circuits, ${telemetry.rttMs}ms)"
+        log("NEWNYM_OK: Tor ControlPort acknowledged ($reply); builtCircuits=${telemetry.builtCircuits}")
         true
     }
 }

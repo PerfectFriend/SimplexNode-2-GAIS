@@ -28,6 +28,7 @@ import com.example.data.security.Bip39Utils
 import com.example.data.security.Socks5ProxyClient
 import com.example.network.TorNetworkManager
 import com.example.network.smp.SmpProtocolEngine
+import com.example.network.tor.TorControlClient
 import com.example.network.xftp.XftpProtocolEngine
 import com.example.network.vpn.VpnProtocolManager
 import com.example.network.vpn.VpnProfile
@@ -49,11 +50,16 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.net.InetSocketAddress
+import java.net.Socket
 import javax.crypto.SecretKey
 
-// [NEEDS-WORK] God-object архитектура (1690 строк): класс объединяет UI-состояние, БД, криптографию, чат, сеть, VPN и P2P. Декомпозиция на отдельные фиче-ViewModel запланирована на Этап 6.
+// [REAL] Этап 11 (Hardening → RC1): Tor ControlPort, SmpProtocolEngine, Dual-Mode secp256k1 Wallet и TorOnionV3 выделены в отдельные сервисы/движки.
+// [NEEDS-WORK] Координатор MainViewModel ещё содержит легаси-потоки Vault/Backup/VPN — дальнейший распил на Feature-ViewModels (VaultViewModel, NetworkViewModel) продолжается.
 // [SECURITY-CRITICAL] Главный координатор криптографического контура и изоляции секретов.
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -94,10 +100,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isPinLocked = MutableStateFlow(true)
     val isPinLocked: StateFlow<Boolean> = _isPinLocked.asStateFlow()
 
-    private val _activeOnionAddress = MutableStateFlow("node_simplex_v3.onion")
+    private val _activeOnionAddress = MutableStateFlow("px_uninitialized_label.onion")
     val activeOnionAddress: StateFlow<String> = _activeOnionAddress.asStateFlow()
 
-    // --- Universal Wallet & Fleet Command Center State (Stage 9) ---
+    private val _activeCanonicalOnionV3 = MutableStateFlow("")
+    val activeCanonicalOnionV3: StateFlow<String> = _activeCanonicalOnionV3.asStateFlow()
+
+    // --- Universal Wallet (Dual-Mode: PROOF vs SPEND secp256k1) & Fleet State (Stage 9 + 11) ---
     private val _walletEvmAddress = MutableStateFlow("")
     val walletEvmAddress: StateFlow<String> = _walletEvmAddress.asStateFlow()
 
@@ -109,6 +118,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _walletSignatureVerified = MutableStateFlow<Boolean?>(null)
     val walletSignatureVerified: StateFlow<Boolean?> = _walletSignatureVerified.asStateFlow()
+
+    // Stage 11 P1: Strict SPEND secp256k1 branch state
+    private val _walletSpendAddress = MutableStateFlow("")
+    val walletSpendAddress: StateFlow<String> = _walletSpendAddress.asStateFlow()
+
+    private val _walletSpendPublicKeyHex = MutableStateFlow("")
+    val walletSpendPublicKeyHex: StateFlow<String> = _walletSpendPublicKeyHex.asStateFlow()
+
+    private val _walletSpendFingerprint = MutableStateFlow("")
+    val walletSpendFingerprint: StateFlow<String> = _walletSpendFingerprint.asStateFlow()
+
+    private val _walletSpendLastSignature = MutableStateFlow<RootKeyHub.WalletSpendSignature?>(null)
+    val walletSpendLastSignature: StateFlow<RootKeyHub.WalletSpendSignature?> = _walletSpendLastSignature.asStateFlow()
+
+    private val _walletSpendSignatureVerified = MutableStateFlow<Boolean?>(null)
+    val walletSpendSignatureVerified: StateFlow<Boolean?> = _walletSpendSignatureVerified.asStateFlow()
 
     private val _fleetNodes = MutableStateFlow<List<FleetNodeEntry>>(emptyList())
     val fleetNodes: StateFlow<List<FleetNodeEntry>> = _fleetNodes.asStateFlow()
@@ -178,7 +203,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _tailscaleEnabled = MutableStateFlow(false)
     val tailscaleEnabled: StateFlow<Boolean> = _tailscaleEnabled.asStateFlow()
 
-    private val _torStatus = MutableStateFlow("DISCONNECTED") // DISCONNECTED, BOOTSTRAPPING, CONNECTED
+    private val _torStatus = MutableStateFlow("DISCONNECTED") // DISCONNECTED, STARTING, BOOTSTRAPPING, CONNECTED, SIMULATION
     val torStatus: StateFlow<String> = _torStatus.asStateFlow()
 
     private val _torLatency = MutableStateFlow(0)
@@ -186,6 +211,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _torStability = MutableStateFlow("0.0%")
     val torStability: StateFlow<String> = _torStability.asStateFlow()
+
+    private val _torControlTelemetry = MutableStateFlow(TorControlClient.TorControlTelemetry())
+    val torControlTelemetry: StateFlow<TorControlClient.TorControlTelemetry> = _torControlTelemetry.asStateFlow()
 
     private val _tailscaleStatus = MutableStateFlow("OFFLINE") // OFFLINE, CONNECTING, ACTIVE
     val tailscaleStatus: StateFlow<String> = _tailscaleStatus.asStateFlow()
@@ -196,8 +224,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _simplexLogs = MutableStateFlow<List<String>>(emptyList())
     val simplexLogs: StateFlow<List<String>> = _simplexLogs.asStateFlow()
 
-    // Onion Address & P2P Details
-    private val _simplexOnionAddress = MutableStateFlow("sx67hg2tqp938vjk9bca1sl8zqr.onion")
+    // Deterministic Onion Address / App Identity Label & P2P Details
+    private val _simplexOnionAddress = MutableStateFlow("px_uninitialized_label.onion")
     val simplexOnionAddress: StateFlow<String> = _simplexOnionAddress.asStateFlow()
 
     private val _tailscaleIp = MutableStateFlow("100.92.148.12")
@@ -730,21 +758,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 addTorLog("SYSTEM_ERROR: Could not launch TorDaemonService: ${e.message}")
             }
 
-            // [SIM] Обновление ориентировочной оценки RTT/стабильности Tor пока нет реального ControlPort GETINFO
+            // [REAL] Этап 11 (P2.1): Опрос реального Tor ControlPort (127.0.0.1:9051 GETINFO) вместо Random()
             viewModelScope.launch {
+                val cookieFile = File(app.filesDir, "tordata/control_auth_cookie")
                 while (_torEnabled.value) {
-                    if (_torStatus.value == "CONNECTED") {
-                        _torLatency.value = (180..380).random()
-                        val randomStability = 96.0 + (0..39).random() / 10.0
-                        _torStability.value = java.util.Locale.US.let { loc -> String.format(loc, "%.1f%%", randomStability) }
+                    val telemetry = TorControlClient.queryTelemetry(
+                        host = TorNetworkManager.DEFAULT_TOR_HOST,
+                        port = TorDaemonService.CONTROL_PORT,
+                        cookieFile = cookieFile
+                    )
+                    _torControlTelemetry.value = telemetry
+
+                    if (telemetry.reachable && telemetry.authenticated) {
+                        _torLatency.value = telemetry.rttMs
+                        _torStability.value = if (telemetry.builtCircuits > 0 && telemetry.networkLiveness == "up") {
+                            "100.0% (${telemetry.builtCircuits} circ)"
+                        } else {
+                            "50.0% (${telemetry.networkLiveness})"
+                        }
+                    } else {
+                        _torLatency.value = 0
+                        _torStability.value = if (_torStatus.value == "SIMULATION") {
+                            "SIM (No ControlPort)"
+                        } else {
+                            "0.0% (ControlPort offline)"
+                        }
                     }
-                    delay(2500)
+                    delay(3500)
                 }
             }
         } else {
             _torStatus.value = "DISCONNECTED"
             _torLatency.value = 0
             _torStability.value = "0.0%"
+            _torControlTelemetry.value = TorControlClient.TorControlTelemetry()
             
             // [REAL] Остановка сервиса и уничтожение процесса
             try {
@@ -758,6 +805,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             addTorLog("TOR: Shutdown signal dispatched to daemon service.")
             addSystemLog("TOR_ROUTE", "Tor routing disabled.", "SUCCESS")
+        }
+    }
+
+    fun refreshTorControlTelemetryOnce() {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            val cookieFile = File(app.filesDir, "tordata/control_auth_cookie")
+            val telemetry = TorControlClient.queryTelemetry(
+                host = TorNetworkManager.DEFAULT_TOR_HOST,
+                port = TorDaemonService.CONTROL_PORT,
+                cookieFile = cookieFile
+            )
+            _torControlTelemetry.value = telemetry
+            if (telemetry.reachable && telemetry.authenticated) {
+                _torLatency.value = telemetry.rttMs
+                _torStability.value = "100.0% (${telemetry.builtCircuits} circ)"
+                addTorLog("CONTROLPORT: liveness=${telemetry.networkLiveness}, circuits=${telemetry.builtCircuits}, rtt=${telemetry.rttMs}ms")
+            } else {
+                _torLatency.value = 0
+                addTorLog("CONTROLPORT: ${telemetry.sourceLabel} (${telemetry.error ?: "offline"})")
+            }
         }
     }
 
@@ -783,11 +851,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun generateNewOnionAddress() {
         viewModelScope.launch(Dispatchers.Default) {
-            addSystemLog("TOR_ROUTE", "Requesting Tor node public identity key refresh...", "PENDING")
-            delay(1500)
-            val randomSuf = (1..6).map { ('a'..'z').random() }.joinToString("")
-            _simplexOnionAddress.value = "sx67hg2tqp93${randomSuf}bca1sl8zqr.onion"
-            addSystemLog("TOR_ROUTE", "Generated fresh v3 onion endpoint signature: sx67hg2tqp93${randomSuf}...", "SUCCESS")
+            if (RootKeyHub.isNodeUnlocked()) {
+                val appLabel = RootKeyHub.deriveTorOnionAddress()
+                val canonicalV3 = RootKeyHub.deriveTorOnionV3Canonical()
+                _activeOnionAddress.value = appLabel
+                _activeCanonicalOnionV3.value = canonicalV3
+                _simplexOnionAddress.value = appLabel
+                addSystemLog("TOR_ROUTE", "Synchronized deterministic identity ($appLabel) & canonical v3 format (${canonicalV3.take(16)}...)", "SUCCESS")
+            } else {
+                addSystemLog("TOR_ROUTE", "Cannot derive deterministic onion identity while node is locked.", "FAILED")
+            }
         }
     }
 
@@ -980,177 +1053,164 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Submits a message through the SimpleX pipeline.
-     * // [SIM] Пошаговая визуальная эмуляция отправки сообщения (X25519 DH, SOCKS5 сокет, Double Ratchet, delay, автоответ).
-     * // [NEEDS-WORK] Подключение реального SMP-транспорта запланировано на Этап 3.
+     * Submits a message through the real SimpleX transport pipeline (Stage 11 P2.2).
+     * [REAL] Никаких фейковых delay() или replies.random():
+     * - Локальные slash-команды (/status, /test, /logs, ...) исполняются напрямую через interpretAdminCommand.
+     * - Обычные сообщения шифруются AES-256-GCM, продвигают SHA-256 ratchet и отправляются через SmpProtocolEngine.sendSmpEnvelope
+     *   по Tor SOCKS5 или Direct TLS с честным статусом доставки (DELIVERED (SMP) или UNREACHABLE / TOR_REQUIRED / IO_ERROR).
      */
     fun submitSimplexMessage(server: SimplexServer, message: String) {
+        val cleanText = message.trim()
+        if (cleanText.isBlank()) return
+
         viewModelScope.launch {
             _isSendingMessage.value = true
-            _sendingProgress.value = 0.05f
-            
-            _sendingStep.value = "Deriving ephemeral session keys (X25519 DH key agreement)..."
-            delay(500)
-            _sendingProgress.value = 0.15f
-            
-            _sendingStep.value = "Packaging local packet frame using Double Ratchet key index #${_doubleRatchetSequence.value + 1}..."
-            delay(500)
+            _sendingProgress.value = 0.25f
+            _sendingStep.value = "AES-256-GCM encryption & SHA-256 ratchet step..."
+
             val nextSequence = _doubleRatchetSequence.value + 1
             _doubleRatchetSequence.value = nextSequence
-            
-            // Advance client ephemeral public key using a SHA-256 one-way chain!
+
             val oldClientKey = _clientEphemeralPublicKey.value
-            val nextClientBytes = java.security.MessageDigest.getInstance("SHA-256").digest(oldClientKey.toByteArray(Charsets.UTF_8))
+            val nextClientBytes = java.security.MessageDigest.getInstance("SHA-256")
+                .digest(oldClientKey.toByteArray(Charsets.UTF_8))
             _clientEphemeralPublicKey.value = nextClientBytes.joinToString("") { String.format("%02x", it) }
-            
-            val mockHex = generateMockPacketHex(message)
-            _sendingPacketHex.value = mockHex
-            _sendingProgress.value = 0.30f
-            
-            // SOCKS5 Layer Routing Simulation
-            val isSocksEnabled = _socks5ProxyEnabled.value
-            val latency = _socks5LatencyMs.value.toLong()
-            
-            if (isSocksEnabled) {
-                val host = _socks5ProxyHost.value
-                val port = _socks5ProxyPort.value
-                val authMode = _socks5AuthMode.value
-                val dnsProtection = _socks5DnsLeakProtection.value
-                
-                _sendingStep.value = "SOCKS5: Opening TCP Socket to proxy at $host:$port..."
-                addSocks5Log("SOCKS5: [CONNECT] Initiating TCP connection to $host:$port...")
-                delay((latency / 4).coerceAtLeast(100))
-                _sendingProgress.value = 0.45f
-                
-                if (authMode == "USER_PASS") {
-                    _sendingStep.value = "SOCKS5: Negotiating Username/Password authentication..."
-                    addSocks5Log("SOCKS5: [AUTH] Sending credentials: User='${_socks5Username.value}', Password=******")
-                    delay((latency / 4).coerceAtLeast(100))
-                    addSocks5Log("SOCKS5: [AUTH] Server response: Status 0x00 (Success)")
-                } else if (authMode == "ONION_COOKIE") {
-                    _sendingStep.value = "SOCKS5: Sending onion auth cookie authorization..."
-                    addSocks5Log("SOCKS5: [AUTH] Transmitting private Onion Auth Cookie: x25519-cookie...")
-                    delay((latency / 4).coerceAtLeast(100))
-                    addSocks5Log("SOCKS5: [AUTH] Authorized successfully via cookie")
-                } else {
-                    _sendingStep.value = "SOCKS5: Sending NO-AUTH greeting [0x05, 0x01, 0x00]..."
-                    addSocks5Log("SOCKS5: [GREET] Client sent version 5, supporting 1 method: NO_AUTH")
-                    delay((latency / 4).coerceAtLeast(100))
-                    addSocks5Log("SOCKS5: [GREET] Server selected auth method: 0x00 (NO_AUTH)")
-                }
-                _sendingProgress.value = 0.60f
-                
-                if (dnsProtection) {
-                    _sendingStep.value = "SOCKS5: SOCKS_CONNECT resolving ${server.address} via remote proxy DNS..."
-                    addSocks5Log("SOCKS5: [RESOLVE] Remote DNS enabled. Preventing local leakage of onion endpoint: ${server.address}")
-                    delay((latency / 4).coerceAtLeast(100))
-                    addSocks5Log("SOCKS5: [RESOLVE] Destination resolved successfully via Tor exit.")
-                } else {
-                    _sendingStep.value = "SOCKS5: WARNING: Local DNS leak risk! Resolving ${server.address} locally..."
-                    addSocks5Log("SOCKS5: [RESOLVE] WARNING: Resolving '${server.address}' locally! IP address leak threat detected!")
-                    delay((latency / 4).coerceAtLeast(100))
-                }
-                
-                _sendingStep.value = "SOCKS5: Handshake COMPLETE. Tunneling encrypted stream to ${server.address}..."
-                addSocks5Log("SOCKS5: [SOCKET] Tunnel established. Relaying 1024-byte payload packet.")
-                delay((latency / 4).coerceAtLeast(100))
-                _sendingProgress.value = 0.80f
+
+            val cipherHex = generateMockPacketHex(cleanText)
+            val signatureHex = generateMockSignatureHex(cipherHex)
+            _sendingPacketHex.value = cipherHex
+
+            // 1. Local node admin command path (`/status`, `/test`, `/logs`, `/keys`, `/whoami`, etc.)
+            if (cleanText.startsWith("/")) {
+                _sendingProgress.value = 1.0f
+                _sendingStep.value = "Executing local node command..."
+                val cmdMsg = SimplexChatMessage(
+                    text = cleanText,
+                    sender = "me",
+                    timestamp = System.currentTimeMillis(),
+                    ratchetIndex = nextSequence,
+                    ephemeralPublicKey = _clientEphemeralPublicKey.value,
+                    signatureHex = signatureHex,
+                    cipherTextHex = cipherHex,
+                    routingPath = listOf("local-node-console"),
+                    relayModeUsed = "LOCAL_CMD",
+                    deliveryStatus = "LOCAL_CMD"
+                )
+                _simplexChatMessages.value = _simplexChatMessages.value + cmdMsg
+
+                val replyText = interpretAdminCommand(cleanText)
+                val replySeq = nextSequence + 1
+                _doubleRatchetSequence.value = replySeq
+                val replyCipher = generateMockPacketHex(replyText)
+                val replySig = generateMockSignatureHex(replyCipher)
+
+                val replyMsg = SimplexChatMessage(
+                    text = replyText,
+                    sender = "peer",
+                    timestamp = System.currentTimeMillis(),
+                    ratchetIndex = replySeq,
+                    ephemeralPublicKey = _peerEphemeralPublicKey.value,
+                    signatureHex = replySig,
+                    cipherTextHex = replyCipher,
+                    routingPath = listOf("local-node-console"),
+                    relayModeUsed = "LOCAL_CMD",
+                    deliveryStatus = "LOCAL_CMD_OUTPUT"
+                )
+                _simplexChatMessages.value = _simplexChatMessages.value + replyMsg
+                addSimplexLog("LOCAL_CMD [$cleanText] executed locally.")
+                _isSendingMessage.value = false
+                _sendingStep.value = ""
+                _sendingProgress.value = 0f
+                _sendingPacketHex.value = ""
+                return@launch
+            }
+
+            // 2. Real SMP relay transport path via SmpProtocolEngine
+            val useTor = _torEnabled.value && _socks5ProxyEnabled.value && _torStatus.value == "CONNECTED"
+            val (parsedHost, parsedPort) = parseHostAndPort(server.address, defaultPort = 443)
+            val targetQueue = SmpProtocolEngine.activeQueues.value.firstOrNull {
+                it.role == "SENDER" && it.serverHost == parsedHost && it.serverPort == parsedPort
+            } ?: SmpProtocolEngine.createLocalQueueState(parsedHost, parsedPort, "SENDER")
+
+            _sendingProgress.value = 0.55f
+            _sendingStep.value = "SMP dispatch -> $parsedHost:$parsedPort (${if (useTor) "Tor SOCKS5" else "Direct TLS"})..."
+            addSocks5Log(
+                if (useTor) "SOCKS5: Routing SMP envelope to $parsedHost:$parsedPort via ${_socks5ProxyHost.value}:${_socks5ProxyPort.value}"
+                else "SOCKS5: Tor inactive/bypassed — attempting direct SMP HTTP(S) connection to $parsedHost:$parsedPort"
+            )
+
+            val delivered = SmpProtocolEngine.sendSmpEnvelope(
+                targetQueue = targetQueue,
+                plaintextMessage = cleanText,
+                ratchetIndex = nextSequence,
+                useTorProxy = useTor
+            )
+
+            val deliveryStatus = if (delivered) {
+                "DELIVERED (SMP)"
             } else {
-                _sendingStep.value = "WARNING: SOCKS5 BYPASSED! Direct routing to ${server.address}..."
-                addSocks5Log("SOCKS5: [WARNING] SOCKS5 routing disabled. Packet sent over clear public internet!")
-                delay(300)
-                _sendingProgress.value = 0.80f
+                "FAILED (${targetQueue.lastDeliveryStatus})"
             }
-            
-            _sendingStep.value = "Establishing Tor SOCKS5 circuit... Routing via mode: ${_relayMode.value}..."
-            delay(500)
-            _sendingProgress.value = 0.90f
-            
-            val routingPath = when (_relayMode.value) {
-                "FANOUT" -> listOf("127.0.0.1:9050", "relay.nostr-onion.net", "matrix.secure-mesh.io", server.address)
-                "CUSTOM" -> listOf("127.0.0.1:9050", _customRelayAddress.value, server.address)
-                "ISOLATED" -> listOf("127.0.0.1:9050", "loopback-fender", server.address)
-                else -> listOf("127.0.0.1:9050", "exit-alpha-9", server.address)
+            val routingPath = if (useTor) {
+                listOf("${_socks5ProxyHost.value}:${_socks5ProxyPort.value}", parsedHost)
+            } else {
+                listOf("DIRECT", parsedHost)
             }
-            
-            _sendingStep.value = "Transmitting encrypted payload: success! Packet hash sha256_b37... acknowledged."
-            delay(500)
-            _sendingProgress.value = 1.0f
-            
-            val signature = generateMockSignatureHex(mockHex)
+
             val sentMsg = SimplexChatMessage(
-                text = message,
+                text = cleanText,
                 sender = "me",
                 timestamp = System.currentTimeMillis(),
                 ratchetIndex = nextSequence,
                 ephemeralPublicKey = _clientEphemeralPublicKey.value,
-                signatureHex = signature,
-                cipherTextHex = mockHex,
+                signatureHex = signatureHex,
+                cipherTextHex = cipherHex,
                 routingPath = routingPath,
-                relayModeUsed = _relayMode.value
+                relayModeUsed = if (useTor) "TOR_SOCKS5_SMP" else "DIRECT_SMP",
+                deliveryStatus = deliveryStatus
             )
-            
             _simplexChatMessages.value = _simplexChatMessages.value + sentMsg
-            
-            // compatibility log appends
-            addSystemLog("MESSAGE_SENT", "Routing client queue transaction payload: $message to ${server.serverName}", "PENDING")
-            addSimplexLog("CLIENT -> QUEUE [${server.channelId}]: Packaging local packet with Double Ratchet...")
-            if (isSocksEnabled) {
-                addSimplexLog("ROUTING: SOCKS5 tunnel resolves ${server.address} securely.")
+
+            if (delivered) {
+                addSimplexLog("SMP_DELIVERED [${targetQueue.queueId.take(8)}] -> $parsedHost:$parsedPort")
+                addSystemLog("MESSAGE_SENT", "SMP envelope delivered to $parsedHost:$parsedPort", "SUCCESS")
             } else {
-                addSimplexLog("ROUTING: Direct public DNS resolution used for ${server.address}.")
+                addSimplexLog("SMP_FAILED [${targetQueue.lastDeliveryStatus}] -> $parsedHost:$parsedPort")
+                addSystemLog(
+                    "MESSAGE_SENT",
+                    "SMP delivery failed (${targetQueue.lastDeliveryStatus}) to $parsedHost:$parsedPort",
+                    "FAILED"
+                )
             }
-            addSimplexLog("ROUTED SUCCESS: Transmitted packet hash sha256_b37... to relay.")
-            addSystemLog("MESSAGE_SENT", "Sent message queue payload successfully to ${server.address}", "SUCCESS")
-            
-            delay(500)
+
+            // Poll active RECEIVER queues matching target host for any real incoming frames
+            val rxQueues = SmpProtocolEngine.activeQueues.value.filter {
+                it.role == "RECEIVER" && it.serverHost == parsedHost
+            }
+            for (rx in rxQueues) {
+                SmpProtocolEngine.pollIncomingEnvelopes(rx, useTorProxy = useTor)
+            }
+
+            _sendingProgress.value = 1.0f
             _isSendingMessage.value = false
             _sendingStep.value = ""
             _sendingProgress.value = 0f
             _sendingPacketHex.value = ""
-            
-            // Auto simulate reply after a short wait
-            delay(1500)
-            val replyText = if (message.trim().startsWith("/")) {
-                interpretAdminCommand(message)
-            } else {
-                val replies = listOf(
-                    "Acknowledge message transaction. Queue receipt parsed.",
-                    "Simplex channel metadata cleared on relay. Session fully anonymized.",
-                    "E2EE message handshake completed via v3 onion relay.",
-                    "Encrypted file transaction ready for fetch."
-                )
-                replies.random()
-            }
-            
-            val peerNextSequence = nextSequence + 1
-            _doubleRatchetSequence.value = peerNextSequence
-            
-            // Rotate peer ephemeral public key using SHA-256 hash chain!
-            val oldPeerKey = _peerEphemeralPublicKey.value
-            val nextPeerBytes = java.security.MessageDigest.getInstance("SHA-256").digest((oldPeerKey + "peer_salt").toByteArray(Charsets.UTF_8))
-            _peerEphemeralPublicKey.value = nextPeerBytes.joinToString("") { String.format("%02x", it) }
-            
-            val peerMockHex = generateMockPacketHex(replyText)
-            val peerSignature = generateMockSignatureHex(peerMockHex)
-            
-            val recvMsg = SimplexChatMessage(
-                text = replyText,
-                sender = "peer",
-                timestamp = System.currentTimeMillis(),
-                ratchetIndex = peerNextSequence,
-                ephemeralPublicKey = _peerEphemeralPublicKey.value,
-                signatureHex = peerSignature,
-                cipherTextHex = peerMockHex,
-                routingPath = routingPath.reversed(),
-                relayModeUsed = _relayMode.value
-            )
-            
-            _simplexChatMessages.value = _simplexChatMessages.value + recvMsg
-            
-            addSimplexLog("RECV <- QUEUE [${server.channelId}]: Decrypting incoming frame...")
-            addSimplexLog("RECV DATA: $replyText")
-            addSystemLog("MESSAGE_RECEIVED", "Incoming encrypted message received and resolved via one-way channel.", "SUCCESS")
+        }
+    }
+
+    private fun parseHostAndPort(address: String, defaultPort: Int = 443): Pair<String, Int> {
+        val cleaned = address.trim()
+            .removePrefix("https://")
+            .removePrefix("http://")
+            .substringBefore("/")
+        val colonIdx = cleaned.lastIndexOf(':')
+        return if (colonIdx > 0) {
+            val host = cleaned.substring(0, colonIdx)
+            val port = cleaned.substring(colonIdx + 1).toIntOrNull() ?: defaultPort
+            Pair(host, port)
+        } else {
+            Pair(cleaned.ifBlank { "127.0.0.1" }, defaultPort)
         }
     }
 
@@ -1848,8 +1908,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 "2. NODE_STATE: ${_nodeState.value}\n" +
                 "3. TOR_DAEMON: ${_torStatus.value}"
             }
+            cleanCmd == "/keys" -> {
+                "=== CRYPTO KEYS STATUS ===\n" +
+                "Node Unlocked: ${RootKeyHub.isNodeUnlocked()}\n" +
+                "PROOF Addr: ${_walletEvmAddress.value.ifBlank { "LOCKED" }}\n" +
+                "SPEND secp256k1: ${_walletSpendAddress.value.ifBlank { "LOCKED" }}\n" +
+                "Client Ratchet: ${_clientEphemeralPublicKey.value.take(12)}..."
+            }
+            cleanCmd == "/whoami" -> {
+                "App Identity Label: ${_activeOnionAddress.value}\n" +
+                "Canonical Tor v3: ${_activeCanonicalOnionV3.value.ifBlank { "LOCKED" }}"
+            }
             else -> {
-                "НЕИЗВЕСТНАЯ КОМАНДА: '$command'\nДоступные команды управления:\n/status - статус ноды\n/start - запустить службы\n/stop - остановить службы\n/restart - перезапуск\n/test - запуск тестов\n/logs - последние логи"
+                "НЕИЗВЕСТНАЯ КОМАНДА: '$command'\nДоступные команды управления:\n/status /start /stop /restart /test /logs /keys /whoami"
             }
         }
     }
@@ -1871,10 +1942,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val torEngineLogs: StateFlow<List<String>> = TorNetworkManager.torLogs
 
     fun rotateTorIdentity() {
+        val cookieFile = File(getApplication<Application>().filesDir, "tordata/control_auth_cookie")
         viewModelScope.launch {
-            addSystemLog("TOR_SIGNAL", "Initiating NEWNYM circuit rotation...", "PENDING")
-            TorNetworkManager.rotateTorIdentity()
-            addSystemLog("TOR_SIGNAL", "New Tor circuit established successfully", "SUCCESS")
+            addSystemLog("TOR_SIGNAL", "Dispatching SIGNAL NEWNYM to Tor ControlPort...", "PENDING")
+            val rotated = TorNetworkManager.rotateTorIdentity(TorDaemonService.CONTROL_PORT, cookieFile)
+            refreshTorControlTelemetryOnce()
+            if (rotated) {
+                addSystemLog("TOR_SIGNAL", "Tor ControlPort acknowledged NEWNYM rotation", "SUCCESS")
+            } else {
+                addSystemLog("TOR_SIGNAL", "NEWNYM unavailable (ControlPort 9051 offline / FallbackSimulation)", "FAILED")
+            }
         }
     }
 
@@ -2004,14 +2081,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ==========================================
-    // --- UNIVERSAL WALLET & FLEET COMMAND CENTER (STAGE 9) ---
+    // --- UNIVERSAL WALLET (PROOF & SPEND secp256k1) & FLEET (STAGE 9 + 11) ---
     // ==========================================
 
     fun refreshWalletAndFleetFromHub() {
         if (!RootKeyHub.isNodeUnlocked()) return
         try {
+            // 1. Canonical Onion format + app identity label
+            _activeOnionAddress.value = RootKeyHub.deriveTorOnionAddress()
+            _activeCanonicalOnionV3.value = RootKeyHub.deriveTorOnionV3Canonical()
+            _simplexOnionAddress.value = _activeOnionAddress.value
+
+            // 2. PROOF mode (HMAC-SHA512 domain proof)
             _walletEvmAddress.value = RootKeyHub.deriveWalletEvmAddress()
             _walletEvmFingerprint.value = RootKeyHub.deriveWalletEvmFingerprint()
+
+            // 3. SPEND mode (true secp256k1 ECDSA)
+            _walletSpendAddress.value = RootKeyHub.deriveWalletSpendAddress()
+            _walletSpendPublicKeyHex.value = RootKeyHub.deriveWalletSpendPublicKeyHex()
+            _walletSpendFingerprint.value = RootKeyHub.deriveWalletSpendFingerprint()
+
             loadOrInitializeFleetRegistry()
         } catch (e: Exception) {
             Log.e("MainViewModel", "Failed deriving wallet/fleet keys from RootKeyHub", e)
@@ -2024,9 +2113,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val sig = RootKeyHub.signWalletChallenge(challenge)
             _walletLastSignature.value = sig
             _walletSignatureVerified.value = null
-            addSystemLog("WALLET_SIGN", "Signed challenge via ParanoidX/Wallet/EVM/v1 (${sig.evmAddress.take(10)}...)", "SUCCESS")
+            addSystemLog("WALLET_PROOF_SIGN", "Signed challenge via ParanoidX/Wallet/EVM/v1 (${sig.evmAddress.take(10)}...)", "SUCCESS")
         } catch (e: Exception) {
-            addSystemLog("WALLET_SIGN", "Challenge signing failed: ${e.message}", "FAILED")
+            addSystemLog("WALLET_PROOF_SIGN", "Challenge signing failed: ${e.message}", "FAILED")
         }
     }
 
@@ -2034,7 +2123,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val last = _walletLastSignature.value ?: return false
         val ok = RootKeyHub.verifyWalletChallenge(last.challenge, last.signatureHex)
         _walletSignatureVerified.value = ok
-        addSystemLog("WALLET_VERIFY", "Local signature verification: ${if (ok) "VALID" else "INVALID"}", if (ok) "SUCCESS" else "FAILED")
+        addSystemLog("WALLET_PROOF_VERIFY", "Local PROOF signature check: ${if (ok) "VALID" else "INVALID"}", if (ok) "SUCCESS" else "FAILED")
+        return ok
+    }
+
+    fun signWalletSpendChallenge(challenge: String) {
+        if (!RootKeyHub.isNodeUnlocked() || challenge.isBlank()) return
+        try {
+            val sig = RootKeyHub.signWalletSpendChallenge(challenge)
+            _walletSpendLastSignature.value = sig
+            _walletSpendSignatureVerified.value = null
+            addSystemLog("WALLET_SPEND_SIGN", "Signed EIP-191 digest with secp256k1 ECDSA (${sig.evmAddress.take(10)}..., v=${sig.v})", "SUCCESS")
+        } catch (e: Exception) {
+            addSystemLog("WALLET_SPEND_SIGN", "secp256k1 signing failed: ${e.message}", "FAILED")
+        }
+    }
+
+    fun verifyLastWalletSpendChallenge(): Boolean {
+        val last = _walletSpendLastSignature.value ?: return false
+        val ok = RootKeyHub.verifyWalletSpendChallenge(last.challenge, last.signatureHex)
+        _walletSpendSignatureVerified.value = ok
+        addSystemLog("WALLET_SPEND_VERIFY", "ECDSA secp256k1 verification: ${if (ok) "VALID" else "INVALID"}", if (ok) "SUCCESS" else "FAILED")
         return ok
     }
 
@@ -2061,6 +2170,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             identityLabel = crypto.identityLabel,
                             isLocal = idx == 0,
                             transportHint = obj.optString("transportHint", if (idx == 0) "Local Device (Tor + P2P)" else "Tor / Tailscale Standby"),
+                            remoteEndpoint = obj.optString("remoteEndpoint", ""),
+                            linkProbeStatus = obj.optString("linkProbeStatus", if (idx == 0) "LOCAL" else "NOT_PROBED"),
+                            lastProbeRttMs = if (obj.has("lastProbeRttMs") && !obj.isNull("lastProbeRttMs")) obj.getInt("lastProbeRttMs") else null,
+                            lastProbeDetail = obj.optString("lastProbeDetail", ""),
                             createdAt = obj.optLong("createdAt", System.currentTimeMillis())
                         )
                     )
@@ -2083,7 +2196,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     fingerprint = primaryCrypto.fingerprint,
                     identityLabel = primaryCrypto.identityLabel,
                     isLocal = true,
-                    transportHint = "Local Device (Tor + SimpleX + P2P)"
+                    transportHint = "Local Device (Tor + SimpleX + P2P)",
+                    remoteEndpoint = "127.0.0.1:${P2pCloudEngine.serverPort}",
+                    linkProbeStatus = "LOCAL"
                 )
             )
         }
@@ -2092,7 +2207,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         saveFleetRegistry(_fleetNodes.value)
     }
 
-    fun addLogicalFleetNode(label: String, transportHint: String = "Tor / Tailscale Remote") {
+    fun addLogicalFleetNode(label: String, transportHint: String = "Tor / Tailscale Remote", remoteEndpoint: String = "") {
         if (!RootKeyHub.isNodeUnlocked()) return
         val current = _fleetNodes.value
         val nextIndex = (current.maxOfOrNull { it.nodeIndex } ?: 0) + 1
@@ -2106,12 +2221,82 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             fingerprint = crypto.fingerprint,
             identityLabel = crypto.identityLabel,
             isLocal = false,
-            transportHint = transportHint.trim().ifBlank { "Tor / Tailscale Remote" }
+            transportHint = transportHint.trim().ifBlank { "Tor / Tailscale Remote" },
+            remoteEndpoint = remoteEndpoint.trim(),
+            linkProbeStatus = "NOT_PROBED"
         )
         val updated = (current + entry).sortedBy { it.nodeIndex }
         _fleetNodes.value = updated
         saveFleetRegistry(updated)
         addSystemLog("FLEET", "Provisioned logical node #$nextIndex ('$cleanLabel') via ${crypto.domainPath}", "SUCCESS")
+    }
+
+    fun probeRemoteFleetNode(nodeIndex: Int, endpointInput: String) {
+        val cleanEndpoint = endpointInput.trim()
+        if (cleanEndpoint.isBlank()) {
+            _fleetNodes.value = _fleetNodes.value.map {
+                if (it.nodeIndex == nodeIndex) it.copy(linkProbeStatus = "UNCONFIGURED", lastProbeDetail = "No host:port endpoint")
+                else it
+            }
+            return
+        }
+
+        viewModelScope.launch {
+            val (host, port) = parseHostAndPort(cleanEndpoint, defaultPort = 443)
+            val startNs = System.nanoTime()
+            val result: Triple<String, Int?, String> = withContext(Dispatchers.IO) {
+                try {
+                    if (host.endsWith(".onion")) {
+                        val useTor = _torEnabled.value && _torStatus.value == "CONNECTED"
+                        if (!useTor) {
+                            return@withContext Triple("UNREACHABLE", null, "TOR_REQUIRED for .onion endpoint")
+                        }
+                        val ok = Socks5ProxyClient.testConnection(
+                            proxyHost = _socks5ProxyHost.value,
+                            proxyPort = _socks5ProxyPort.value,
+                            authMode = _socks5AuthMode.value,
+                            username = _socks5Username.value,
+                            password = _socks5Password.value,
+                            targetHost = host,
+                            targetPort = port,
+                            dnsLeakProtection = true,
+                            callback = object : Socks5ProxyClient.LogCallback {
+                                override fun onLog(message: String) {}
+                            }
+                        )
+                        val rtt = ((System.nanoTime() - startNs) / 1_000_000L).toInt().coerceAtLeast(1)
+                        if (ok) Triple("REACHABLE", rtt, "Tor SOCKS5 tunnel OK")
+                        else Triple("UNREACHABLE", null, "SOCKS5 tunnel refused")
+                    } else {
+                        Socket().use { sock ->
+                            sock.connect(InetSocketAddress(host, port), 2500)
+                        }
+                        val rtt = ((System.nanoTime() - startNs) / 1_000_000L).toInt().coerceAtLeast(1)
+                        Triple("REACHABLE", rtt, "TCP handshake $host:$port")
+                    }
+                } catch (e: Exception) {
+                    Triple("UNREACHABLE", null, e.message ?: "Connect failed")
+                }
+            }
+
+            val updated = _fleetNodes.value.map {
+                if (it.nodeIndex == nodeIndex) {
+                    it.copy(
+                        remoteEndpoint = cleanEndpoint,
+                        linkProbeStatus = result.first,
+                        lastProbeRttMs = result.second,
+                        lastProbeDetail = result.third
+                    )
+                } else it
+            }
+            _fleetNodes.value = updated
+            saveFleetRegistry(updated)
+            addSystemLog(
+                "FLEET_PROBE",
+                "Node #$nodeIndex ($cleanEndpoint): ${result.first}${result.second?.let { " ${it}ms" } ?: ""} (${result.third})",
+                if (result.first == "REACHABLE") "SUCCESS" else "FAILED"
+            )
+        }
     }
 
     fun removeLogicalFleetNode(nodeIndex: Int) {
@@ -2130,6 +2315,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     put("nodeIndex", n.nodeIndex)
                     put("label", n.label)
                     put("transportHint", n.transportHint)
+                    put("remoteEndpoint", n.remoteEndpoint)
+                    put("linkProbeStatus", n.linkProbeStatus)
+                    if (n.lastProbeRttMs != null) put("lastProbeRttMs", n.lastProbeRttMs)
+                    put("lastProbeDetail", n.lastProbeDetail)
                     put("createdAt", n.createdAt)
                 }
             )
@@ -2257,6 +2446,7 @@ data class SimplexChatMessage(
     val signatureHex: String,
     val cipherTextHex: String,
     val routingPath: List<String>,
-    val relayModeUsed: String
+    val relayModeUsed: String,
+    val deliveryStatus: String = "HISTORY"
 )
 

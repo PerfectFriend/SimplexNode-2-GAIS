@@ -195,13 +195,26 @@ object RootKeyHub {
     fun getActiveMnemonic(): String? = activeMnemonicInMemory
 
     // [REAL] Wallet Proof MVP: Детерминированная идентификация и подпись challenge через HKDF-SHA512 + EIP-191 Keccak-256.
-    // [NEEDS-WORK] Полноценный secp256k1 ECDSA spend-ключ для Ethereum mainnet не используется (сознательный MVP-долг).
+    // [REAL] Этап 11 (P1): Полноценный secp256k1 ECDSA вынесен в отдельный режим SPEND ("ParanoidX/Wallet/Spend/secp256k1/v1").
     data class WalletChallengeSignature(
         val evmAddress: String,
         val challenge: String,
         val digestHex: String,
         val signatureHex: String,
         val algorithm: String = "HKDF-SHA512 + EIP-191 Keccak-256 HMAC Proof (Non-secp256k1 MVP)",
+        val timestamp: Long = System.currentTimeMillis()
+    )
+
+    data class WalletSpendSignature(
+        val evmAddress: String,
+        val publicKeyHex: String,
+        val challenge: String,
+        val digestHex: String,
+        val rHex: String,
+        val sHex: String,
+        val v: Int,
+        val signatureHex: String,
+        val algorithm: String = "secp256k1 ECDSA (RFC 6979 + EIP-2 low-S + EIP-191)",
         val timestamp: Long = System.currentTimeMillis()
     )
 
@@ -236,7 +249,7 @@ object RootKeyHub {
 
     /**
      * Calculates the deterministic application identity label (`px_...node.onion`) from seed.
-     * Note: This is an application-level deterministic node identity label, not raw Tor v3 wire-format base32(pubkey||checksum||0x03).
+     * Explicitly NOT a wire-format Tor v3 `.onion` address.
      */
     fun deriveTorOnionAddress(customSeed: ByteArray? = null): String {
         val torKey = deriveTorOnionKey(customSeed)
@@ -244,6 +257,16 @@ object RootKeyHub {
         val rawBytes = pubKeyHash.take(16).toByteArray()
         val hex = rawBytes.joinToString("") { "%02x".format(it) }
         return "px_${hex.take(12)}node.onion"
+    }
+
+    /**
+     * Derives a syntactically canonical 56-char Tor v3 `.onion` address (base32(key32 || sha3_checksum2 || 0x03))
+     * from the HKDF hidden-service key material. Note: Tor daemon wire hosting requires Ed25519 key export
+     * into `tordata/hidden_service/` (native `libtor.so`).
+     */
+    fun deriveTorOnionV3Canonical(customSeed: ByteArray? = null): String {
+        val torKey = deriveTorOnionKey(customSeed)
+        return TorOnionV3.encodeV3Address(torKey)
     }
 
     /**
@@ -375,6 +398,80 @@ object RootKeyHub {
                 expected.lowercase().toByteArray(Charsets.UTF_8),
                 signatureHex.trim().lowercase().toByteArray(Charsets.UTF_8)
             )
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // --- DUAL-MODE WALLET PART 2: TRUE secp256k1 SPEND KEY (STAGE 11 P1) ---
+
+    /**
+     * Derives deterministic 32-byte secp256k1 private scalar strictly separated from PROOF branch:
+     * Domain context: "ParanoidX/Wallet/Spend/secp256k1/v1"
+     */
+    fun deriveWalletSpendPrivateKey(customSeed: ByteArray? = null): ByteArray {
+        val seed = customSeed ?: masterSeedInMemory ?: throw IllegalStateException("Node is locked. Cannot derive keys.")
+        val raw = hkdfExpand(
+            seed,
+            "evm_spend_secp256k1_salt".toByteArray(Charsets.UTF_8),
+            "ParanoidX/Wallet/Spend/secp256k1/v1".toByteArray(Charsets.UTF_8),
+            32
+        )
+        return Secp256k1Engine.normalizePrivateKey(raw)
+    }
+
+    fun deriveWalletSpendPublicKey64(customSeed: ByteArray? = null): ByteArray {
+        val priv = deriveWalletSpendPrivateKey(customSeed)
+        return try {
+            Secp256k1Engine.derivePublicKey64(priv)
+        } finally {
+            CryptoUtils.zeroize(priv)
+        }
+    }
+
+    fun deriveWalletSpendPublicKeyHex(customSeed: ByteArray? = null): String {
+        val pub64 = deriveWalletSpendPublicKey64(customSeed)
+        return "0x04" + pub64.joinToString("") { "%02x".format(it) }
+    }
+
+    fun deriveWalletSpendAddress(customSeed: ByteArray? = null): String {
+        val pub64 = deriveWalletSpendPublicKey64(customSeed)
+        return Secp256k1Engine.publicKeyToEip55Address(pub64)
+    }
+
+    fun deriveWalletSpendFingerprint(customSeed: ByteArray? = null): String {
+        val pub64 = deriveWalletSpendPublicKey64(customSeed)
+        val digest = MessageDigest.getInstance("SHA-256").digest(pub64)
+        return digest.take(8).joinToString("") { "%02X".format(it) }.chunked(4).joinToString("-")
+    }
+
+    fun signWalletSpendChallenge(challenge: String, customSeed: ByteArray? = null): WalletSpendSignature {
+        val priv = deriveWalletSpendPrivateKey(customSeed)
+        return try {
+            val pub64 = Secp256k1Engine.derivePublicKey64(priv)
+            val address = Secp256k1Engine.publicKeyToEip55Address(pub64)
+            val digest = Keccak256.ethereumMessageHash(challenge)
+            val sig = Secp256k1Engine.signDigest(digest, priv)
+            WalletSpendSignature(
+                evmAddress = address,
+                publicKeyHex = "0x04" + pub64.joinToString("") { "%02x".format(it) },
+                challenge = challenge,
+                digestHex = "0x" + digest.joinToString("") { "%02x".format(it) },
+                rHex = sig.rHex,
+                sHex = sig.sHex,
+                v = sig.v,
+                signatureHex = sig.to65BytesHex()
+            )
+        } finally {
+            CryptoUtils.zeroize(priv)
+        }
+    }
+
+    fun verifyWalletSpendChallenge(challenge: String, signatureHex65: String, customSeed: ByteArray? = null): Boolean {
+        return try {
+            val pub64 = deriveWalletSpendPublicKey64(customSeed)
+            val digest = Keccak256.ethereumMessageHash(challenge)
+            Secp256k1Engine.verifyDigest(digest, signatureHex65, pub64)
         } catch (_: Exception) {
             false
         }

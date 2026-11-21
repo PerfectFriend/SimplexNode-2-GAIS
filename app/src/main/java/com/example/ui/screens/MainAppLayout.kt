@@ -175,7 +175,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                         fontSize = 18.sp
                     )
                     Text(
-                        text = "$activeOnionAddress • E2EE Mesh",
+                        text = "$activeOnionAddress • Identity Label",
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
                         color = palette.textSecondary

@@ -51,7 +51,9 @@ fun NetworkScreen(viewModel: MainViewModel) {
     val torStatus by viewModel.torStatus.collectAsState()
     val torLatency by viewModel.torLatency.collectAsState()
     val torStability by viewModel.torStability.collectAsState()
+    val torControlTelemetry by viewModel.torControlTelemetry.collectAsState()
     val onionAddress by viewModel.simplexOnionAddress.collectAsState()
+    val canonicalOnionV3 by viewModel.activeCanonicalOnionV3.collectAsState()
     val torCircuitNodes by viewModel.torCircuitNodes.collectAsState()
     val currentExitIp by viewModel.currentExitIp.collectAsState()
     val torEngineLogs by viewModel.torEngineLogs.collectAsState()
@@ -230,7 +232,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
 
                                     Spacer(modifier = Modifier.height(10.dp))
 
-                                    // Onion Address Section
+                                    // Onion Address & Canonical Format Section (Stage 11 P2.3)
                                     Column(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -240,7 +242,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                             .padding(10.dp)
                                     ) {
                                         Text(
-                                            text = "LOCAL HIDDEN SERVICE (.ONION)",
+                                            text = "APP IDENTITY LABEL (NON-WIRE • HKDF)",
                                             style = MaterialTheme.typography.labelSmall,
                                             fontSize = 9.sp,
                                             color = MaterialTheme.colorScheme.outline
@@ -272,6 +274,70 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                                     modifier = Modifier.size(16.dp)
                                                 )
                                             }
+                                        }
+                                        if (canonicalOnionV3.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(6.dp))
+                                            Text(
+                                                text = "CANONICAL TOR V3 FORMAT (SHA3-256 + BASE32)",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 8.sp,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                            Text(
+                                                text = canonicalOnionV3,
+                                                fontSize = 9.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.testTag("canonical_onion_v3_text")
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // ControlPort 9051 GETINFO Telemetry Card (Stage 11 P2.1)
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
+                                            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.15f), RoundedCornerShape(8.dp))
+                                            .padding(10.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "CONTROLPORT 9051 GETINFO",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = if (torControlTelemetry.authenticated) Color(0xFF00E676) else MaterialTheme.colorScheme.outline
+                                            )
+                                            Text(
+                                                text = "${torControlTelemetry.sourceLabel} • ${torLatency}ms",
+                                                fontSize = 9.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.testTag("tor_controlport_status")
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Liveness: ${torControlTelemetry.networkLiveness} | Built Circuits: ${torControlTelemetry.builtCircuits} | Stability: $torStability",
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        if (!torControlTelemetry.error.isNullOrBlank()) {
+                                            Text(
+                                                text = "ControlPort: ${torControlTelemetry.error}",
+                                                fontSize = 9.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = MaterialTheme.colorScheme.error
+                                            )
                                         }
                                     }
 

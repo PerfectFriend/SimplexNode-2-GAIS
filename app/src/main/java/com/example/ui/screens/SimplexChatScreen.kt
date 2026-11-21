@@ -417,6 +417,13 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
                         Text("${getChatText("inspect_index", currentLanguage)} #${msg.ratchetIndex}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                         Text("${getChatText("inspect_transport", currentLanguage)} ${msg.relayModeUsed}", fontSize = 11.sp, color = MaterialTheme.colorScheme.outline)
                     }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Delivery: ${msg.deliveryStatus}",
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (msg.deliveryStatus.startsWith("DELIVERED") || msg.deliveryStatus.startsWith("LOCAL")) Color(0xFF00FF66) else Color(0xFFF59E0B)
+                    )
                 }
             },
             confirmButton = {
@@ -878,11 +885,17 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
                                             fontFamily = FontFamily.Monospace
                                         )
                                         if (isMe) {
+                                            val (statusBadge, statusTint) = when {
+                                                msg.deliveryStatus.startsWith("DELIVERED") -> "✓✓ SMP" to Color(0xFF00FF66)
+                                                msg.deliveryStatus.startsWith("LOCAL") -> "✓ LOCAL" to Color(0xFF38BDF8)
+                                                msg.deliveryStatus.startsWith("FAILED") -> "⚠ ${msg.deliveryStatus.removePrefix("FAILED ").trim('(', ')')}" to Color(0xFFF59E0B)
+                                                else -> "✓" to Color(0xFF94A3B8)
+                                            }
                                             Text(
-                                                text = "✓✓",
+                                                text = statusBadge,
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF00FF66)
+                                                color = statusTint
                                             )
                                         }
                                     }
@@ -1063,10 +1076,10 @@ fun SimplexChatScreen(viewModel: MainViewModel) {
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Поделиться Onion адресом") },
+                                text = { Text("Поделиться Identity Label") },
                                 leadingIcon = { Icon(Icons.Default.VpnLock, contentDescription = null, tint = Color(0xFF00B0FF)) },
                                 onClick = {
-                                    currentMessage = "node_simplex_v3_mesh.onion"
+                                    currentMessage = viewModel.activeOnionAddress.value
                                     showAttachmentMenu = false
                                 }
                             )

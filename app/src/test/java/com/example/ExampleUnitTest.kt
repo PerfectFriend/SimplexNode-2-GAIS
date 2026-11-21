@@ -865,4 +865,155 @@ class ExampleUnitTest {
         assertTrue(sig.algorithm.contains("HMAC Proof", ignoreCase = true))
         assertTrue(sig.algorithm.contains("Non-secp256k1", ignoreCase = true))
     }
+
+    @Test
+    fun testTorControlClientLiveCookieAuthGetInfoAndOfflineHonesty() = runBlocking {
+        val cookieFile = File(System.getProperty("java.io.tmpdir"), "tor_ctrl_cookie_${System.currentTimeMillis()}")
+        val cookieBytes = ByteArray(32) { (it + 1).toByte() }
+        cookieFile.writeBytes(cookieBytes)
+        val expectedHex = cookieBytes.joinToString("") { "%02x".format(it) }
+
+        val server = java.net.ServerSocket(0)
+        val port = server.localPort
+        val capturedCommands = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+        val worker = Thread {
+            try {
+                repeat(2) {
+                    val sock = server.accept()
+                    val reader = sock.getInputStream().bufferedReader(Charsets.US_ASCII)
+                    val writer = sock.getOutputStream().writer(Charsets.US_ASCII)
+                    while (true) {
+                        val cmd = reader.readLine() ?: break
+                        capturedCommands.add(cmd)
+                        when {
+                            cmd == "AUTHENTICATE $expectedHex" -> {
+                                writer.write("250 OK\r\n")
+                                writer.flush()
+                            }
+                            cmd.startsWith("AUTHENTICATE") -> {
+                                writer.write("515 Authentication failed\r\n")
+                                writer.flush()
+                                break
+                            }
+                            cmd == "GETINFO network-liveness" -> {
+                                writer.write("250-network-liveness=up\r\n250 OK\r\n")
+                                writer.flush()
+                            }
+                            cmd == "GETINFO status/bootstrap-phase" -> {
+                                writer.write("250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 TAG=done\r\n250 OK\r\n")
+                                writer.flush()
+                            }
+                            cmd == "GETINFO circuit-status" -> {
+                                writer.write("250+circuit-status=\r\n12 BUILT \$AAA~Guard,\$BBB~Middle,\$CCC~Exit\r\n15 BUILT \$DDD~Guard,\$EEE~Exit\r\n.\r\n250 OK\r\n")
+                                writer.flush()
+                            }
+                            cmd == "SIGNAL NEWNYM" -> {
+                                writer.write("250 OK\r\n")
+                                writer.flush()
+                            }
+                            cmd == "QUIT" -> {
+                                writer.write("250 closing connection\r\n")
+                                writer.flush()
+                                break
+                            }
+                        }
+                    }
+                    sock.close()
+                }
+            } catch (_: Exception) {
+            } finally {
+                try { server.close() } catch (_: Exception) {}
+            }
+        }
+        worker.start()
+
+        try {
+            val live = com.example.network.tor.TorControlClient.queryTelemetry("127.0.0.1", port, cookieFile)
+            assertTrue("Live ControlPort must be reachable", live.reachable)
+            assertTrue("Cookie auth must succeed", live.authenticated)
+            assertEquals("up", live.networkLiveness)
+            assertEquals(2, live.builtCircuits)
+            assertEquals("CONTROLPORT_LIVE", live.sourceLabel)
+            assertTrue("Measured RTT must be >= 1ms", live.rttMs >= 1)
+
+            val (newNymOk, _) = com.example.network.tor.TorControlClient.sendSignalNewNym("127.0.0.1", port, cookieFile)
+            assertTrue("SIGNAL NEWNYM must succeed against ControlPort", newNymOk)
+            assertTrue(capturedCommands.contains("SIGNAL NEWNYM"))
+
+            worker.join(3000)
+
+            // Offline honesty: closed ephemeral port must NOT fabricate RTT or success
+            val offline = com.example.network.tor.TorControlClient.queryTelemetry("127.0.0.1", 64997, null, timeoutMs = 400)
+            assertFalse(offline.reachable)
+            assertFalse(offline.authenticated)
+            assertEquals(0, offline.rttMs)
+            assertEquals("NO_CONTROLPORT", offline.sourceLabel)
+        } finally {
+            cookieFile.delete()
+            try { server.close() } catch (_: Exception) {}
+        }
+    }
+
+    @Test
+    fun testSha3AndCanonicalTorV3OnionEncoding() {
+        // 1. Standard NIST FIPS-202 SHA3-256 empty-input vector (must differ from Keccak-256)
+        val sha3Empty = com.example.data.security.Keccak256.sha3Digest(byteArrayOf())
+        assertEquals(
+            "a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a",
+            sha3Empty.joinToString("") { "%02x".format(it) }
+        )
+
+        // 2. Canonical Tor v3 address generation from 32-byte key material
+        val seed = Bip39Utils.deriveSeed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
+        val canonicalV3 = RootKeyHub.deriveTorOnionV3Canonical(seed)
+        assertTrue(canonicalV3.endsWith(".onion"))
+        assertEquals("Canonical Tor v3 address must be 56 base32 chars + .onion = 62 chars", 62, canonicalV3.length)
+        assertTrue("Canonical Tor v3 checksum + version byte must validate", com.example.data.security.TorOnionV3.isCanonicalV3Address(canonicalV3))
+        assertFalse(com.example.data.security.TorOnionV3.isAppIdentityLabel(canonicalV3))
+
+        // Corrupting a single character breaks the SHA3-256 Tor v3 checksum
+        val tampered = (if (canonicalV3[0] == 'a') 'b' else 'a') + canonicalV3.drop(1)
+        assertFalse("Tampered canonical onion must fail checksum", com.example.data.security.TorOnionV3.isCanonicalV3Address(tampered))
+
+        // App identity label (px_...node.onion) is explicitly distinguished from wire Tor v3
+        val appLabel = RootKeyHub.deriveTorOnionAddress(seed)
+        assertTrue(com.example.data.security.TorOnionV3.isAppIdentityLabel(appLabel))
+        assertFalse(com.example.data.security.TorOnionV3.isCanonicalV3Address(appLabel))
+    }
+
+    @Test
+    fun testSecp256k1EngineKnownVectorAndDualModeWalletSeparation() {
+        // 1. Canonical secp256k1 vector: private key d = 1 -> pubkey G -> Ethereum address 0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf
+        val privOne = ByteArray(32)
+        privOne[31] = 0x01
+        val pubG = com.example.data.security.Secp256k1Engine.derivePublicKey64(privOne)
+        val ethAddrOne = com.example.data.security.Secp256k1Engine.publicKeyToEip55Address(pubG)
+        assertEquals("0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf", ethAddrOne)
+
+        // 2. Dual-Mode separation on same BIP-39 Master Seed
+        val seed = Bip39Utils.deriveSeed("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")
+        val proofAddress = RootKeyHub.deriveWalletEvmAddress(seed)
+        val spendAddress1 = RootKeyHub.deriveWalletSpendAddress(seed)
+        val spendAddress2 = RootKeyHub.deriveWalletSpendAddress(seed)
+
+        assertEquals("SPEND secp256k1 address must be deterministic", spendAddress1, spendAddress2)
+        assertNotEquals("PROOF (HMAC) and SPEND (secp256k1) addresses must be strictly separated", proofAddress, spendAddress1)
+
+        // 3. secp256k1 ECDSA (RFC 6979) sign + verify roundtrip
+        val msg = "Stage 11 RC1 secp256k1 attestation"
+        val spendSig = RootKeyHub.signWalletSpendChallenge(msg, seed)
+        assertEquals(spendAddress1, spendSig.evmAddress)
+        assertTrue(spendSig.v == 27 || spendSig.v == 28)
+        assertEquals("65-byte r||s||v hex must have 132 chars with 0x", 132, spendSig.signatureHex.length)
+
+        assertTrue(
+            "Valid secp256k1 ECDSA signature must verify",
+            RootKeyHub.verifyWalletSpendChallenge(msg, spendSig.signatureHex, seed)
+        )
+        assertFalse(
+            "Tampered challenge must fail secp256k1 verification",
+            RootKeyHub.verifyWalletSpendChallenge("Tampered message", spendSig.signatureHex, seed)
+        )
+    }
 }

@@ -32,10 +32,18 @@ object Keccak256 {
     /**
      * Computes standard 256-bit Keccak digest (rate = 136 bytes, capacity = 64 bytes, pad = 0x01).
      */
-    fun digest(input: ByteArray): ByteArray {
+    fun digest(input: ByteArray): ByteArray = sponge256(input, 0x01)
+
+    /**
+     * Computes standard NIST FIPS-202 SHA3-256 digest (rate = 136 bytes, capacity = 64 bytes, pad = 0x06).
+     * Used by Tor Onion v3 address checksums (`".onion checksum" || pubkey || 0x03`).
+     */
+    fun sha3Digest(input: ByteArray): ByteArray = sponge256(input, 0x06)
+
+    private fun sponge256(input: ByteArray, padByte: Byte): ByteArray {
         val state = LongArray(25)
         val rateBytes = 136
-        val padded = padKeccak(input, rateBytes)
+        val padded = padKeccak(input, rateBytes, padByte)
 
         var offset = 0
         while (offset < padded.size) {
@@ -88,15 +96,15 @@ object Keccak256 {
         return digest(combined)
     }
 
-    private fun padKeccak(input: ByteArray, rate: Int): ByteArray {
+    private fun padKeccak(input: ByteArray, rate: Int, padByte: Byte): ByteArray {
         val rem = input.size % rate
         val padLen = rate - rem
         val out = ByteArray(input.size + padLen)
         System.arraycopy(input, 0, out, 0, input.size)
         if (padLen == 1) {
-            out[out.size - 1] = (0x01 or 0x80).toByte()
+            out[out.size - 1] = ((padByte.toInt() and 0xFF) or 0x80).toByte()
         } else {
-            out[input.size] = 0x01
+            out[input.size] = padByte
             out[out.size - 1] = 0x80.toByte()
         }
         return out
