@@ -1,7 +1,7 @@
 # EVOLUTION PLAN
 ## ParanoidX Node / SimplexNode-2-GAIS
 
-**Актуальная версия:** 2.7  
+**Актуальная версия:** 2.8  
 **Владелец:** Гриша (Аудитор)  
 **Последнее обновление:** 2026-11-22
 
@@ -9,40 +9,32 @@
 
 ## Статус
 
-| Диапазон | Содержание | Статус |
-|----------|------------|--------|
-| 0–10 | Каркас ноды | ✅ |
-| 11 | Hardening (secp, Tor control, live SMP) | ✅ |
-| 12 | RC1 Closure (VPN honesty, VM split, smoke, notes) | ✅ |
+| Этап | Суть | Статус |
+|------|------|--------|
+| 0–12 | Каркас → RC1 Closure | ✅ |
+| RC1 | Feature freeze | ✅ ОБЪЯВЛЕН |
+| 13.1 | Security pass (clipboard, panic zeroize, backup rules) | ✅ |
+| 13.2 | Post-RC1 backlog (next) | 🟡 |
 
-# RC1 FEATURE FREEZE
+# RC1 FEATURE FREEZE — действует
 
-**RC1 объявлен.**  
-Новые фичи в trunk не открываем. Только bugfix / security fix / документация.
-
-См. `RC1_NOTES.md`.
+Только bugfix / security / снятие SIM / распил legacy. Без новых продуктовых поверхностей.
 
 ---
 
-## Этап 13 — Post-RC1 Maintenance & GA Backlog
-**Статус:** 🟡 В РАБОТЕ (выдан 2026-11-22)
+## Этап 13.2 — Следующий кусок backlog
 
-### Режим работы
-- **Не** добавлять новые продуктовые поверхности (новые экраны «ради красоты», новые протоколы без необходимости).
-- Можно: чинить баги, усиливать безопасность, убирать оставшийся `[SIM]`, доводить MVP→READY.
+**Рекомендуемый фокус:** вынос остатков Vault / ZK-backup orchestration из legacy `MainViewModel` в `VaultCoordinator` / `VaultViewModel` (или эквивалент).
 
-### Приоритетный backlog (на выбор, по одному крупному куску за итерацию)
-1. **VPN native path** — честный баннер остаётся, но если появляется real WG/OVPN/engine integration — только с тестами и без fake throughput.
-2. **Tor packaging** — native `libtor.so` multi-ABI в APK + путь без FallbackSimulation на поддерживаемых ABI.
-3. **Добить распил** — Vault/ZK-backup orchestration из legacy `MainViewModel`.
-4. **Fleet** — не mesh-gossip ради галочки; максимум: устойчивее probe history + clear UX lastProbe.
-5. **Security pass** — panic wipe edges, clipboard policy для seed/PIN, backup flags review.
+Почему не Tor packaging первым: multi-ABI `libtor.so` требует реальных артефактов в репо/CI; без бинарей это будет декоративный PR. Распил Vault — чистый код, снижает риск регрессий RC1.
 
-### Критерии приёмки итерации 13.x
-- Нет feature creep вне backlog
-- Обновлён RC1_NOTES / матрица только по факту
-- Тесты зелёные
-- Короткий отчёт: что починил / что осталось
+Альтернативы (если бинари Tor реально есть):
+1. Tor native packaging multi-ABI + честный статус без Fallback на поддерживаемых ABI
+2. Security/bugfix по найденным дефектам
+3. Idle report, если критичного нет
 
-### GA (далеко)
-GA = RC1 + native Tor в релизной сборке + VPN real engines или явно «not in GA» + Vault VM split + operational docs. Не завтра.
+### Критерии 13.2
+- Нет feature creep
+- Если распил Vault: публичные RC1 flows (unlock/lock/panic/list/add) не сломаны
+- Тесты зелёные + короткий отчёт
+- RC1_NOTES обновлён только по факту
