@@ -30,10 +30,6 @@ import com.example.network.TorNetworkManager
 import com.example.network.smp.SmpProtocolEngine
 import com.example.network.tor.TorControlClient
 import com.example.network.xftp.XftpProtocolEngine
-import com.example.network.vpn.VpnProtocolManager
-import com.example.network.vpn.VpnProfile
-import com.example.network.vpn.VpnProtocolType
-import com.example.network.vpn.VpnConfigParser
 import com.example.ui.theme.NodeThemeProfile
 import com.example.network.p2p.P2pBlockStorage
 import com.example.network.p2p.P2pCloudEngine
@@ -54,13 +50,11 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
-import java.net.InetSocketAddress
-import java.net.Socket
 import javax.crypto.SecretKey
 
-// [REAL] Этап 11 (Hardening → RC1): Tor ControlPort, SmpProtocolEngine, Dual-Mode secp256k1 Wallet и TorOnionV3 выделены в отдельные сервисы/движки.
-// [NEEDS-WORK] Координатор MainViewModel ещё содержит легаси-потоки Vault/Backup/VPN — дальнейший распил на Feature-ViewModels (VaultViewModel, NetworkViewModel) продолжается.
-// [SECURITY-CRITICAL] Главный координатор криптографического контура и изоляции секретов.
+// [REAL] Этап 12 (Декомпозиция God-object для RC1):
+// Вынесены VpnViewModel (VPN Suite), IdentityFleetCoordinator (Wallet PROOF/SPEND + Fleet Registry) и NodeDiagnosticsCoordinator.
+// [SECURITY-CRITICAL] Координатор локального криптоконтура, SQLCipher Vault и SimpleX E2EE транспорта.
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // [REAL] + [PROD-READY] Локальная база данных Room, полностью зашифрованная на диске через SQLCipher (Этап 1).
@@ -93,50 +87,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _bip39Mnemonic = MutableStateFlow("")
     val bip39Mnemonic: StateFlow<String> = _bip39Mnemonic.asStateFlow()
 
-    // --- Sovereign Onboarding & Root Key State (Stage 8) ---
+    // --- Sovereign Onboarding & Root Key State (Stage 8 + Extracted Coordinators) ---
     private val _isOnboarded = MutableStateFlow(false)
     val isOnboarded: StateFlow<Boolean> = _isOnboarded.asStateFlow()
 
     private val _isPinLocked = MutableStateFlow(true)
     val isPinLocked: StateFlow<Boolean> = _isPinLocked.asStateFlow()
 
-    private val _activeOnionAddress = MutableStateFlow("px_uninitialized_label.onion")
-    val activeOnionAddress: StateFlow<String> = _activeOnionAddress.asStateFlow()
-
-    private val _activeCanonicalOnionV3 = MutableStateFlow("")
-    val activeCanonicalOnionV3: StateFlow<String> = _activeCanonicalOnionV3.asStateFlow()
-
-    // --- Universal Wallet (Dual-Mode: PROOF vs SPEND secp256k1) & Fleet State (Stage 9 + 11) ---
-    private val _walletEvmAddress = MutableStateFlow("")
-    val walletEvmAddress: StateFlow<String> = _walletEvmAddress.asStateFlow()
-
-    private val _walletEvmFingerprint = MutableStateFlow("")
-    val walletEvmFingerprint: StateFlow<String> = _walletEvmFingerprint.asStateFlow()
-
-    private val _walletLastSignature = MutableStateFlow<RootKeyHub.WalletChallengeSignature?>(null)
-    val walletLastSignature: StateFlow<RootKeyHub.WalletChallengeSignature?> = _walletLastSignature.asStateFlow()
-
-    private val _walletSignatureVerified = MutableStateFlow<Boolean?>(null)
-    val walletSignatureVerified: StateFlow<Boolean?> = _walletSignatureVerified.asStateFlow()
-
-    // Stage 11 P1: Strict SPEND secp256k1 branch state
-    private val _walletSpendAddress = MutableStateFlow("")
-    val walletSpendAddress: StateFlow<String> = _walletSpendAddress.asStateFlow()
-
-    private val _walletSpendPublicKeyHex = MutableStateFlow("")
-    val walletSpendPublicKeyHex: StateFlow<String> = _walletSpendPublicKeyHex.asStateFlow()
-
-    private val _walletSpendFingerprint = MutableStateFlow("")
-    val walletSpendFingerprint: StateFlow<String> = _walletSpendFingerprint.asStateFlow()
-
-    private val _walletSpendLastSignature = MutableStateFlow<RootKeyHub.WalletSpendSignature?>(null)
-    val walletSpendLastSignature: StateFlow<RootKeyHub.WalletSpendSignature?> = _walletSpendLastSignature.asStateFlow()
-
-    private val _walletSpendSignatureVerified = MutableStateFlow<Boolean?>(null)
-    val walletSpendSignatureVerified: StateFlow<Boolean?> = _walletSpendSignatureVerified.asStateFlow()
-
-    private val _fleetNodes = MutableStateFlow<List<FleetNodeEntry>>(emptyList())
-    val fleetNodes: StateFlow<List<FleetNodeEntry>> = _fleetNodes.asStateFlow()
+    private val identityFleet = IdentityFleetCoordinator(application, viewModelScope, ::addSystemLog)
+    val activeOnionAddress: StateFlow<String> = identityFleet.activeOnionAddress
+    val activeCanonicalOnionV3: StateFlow<String> = identityFleet.activeCanonicalOnionV3
+    val walletEvmAddress: StateFlow<String> = identityFleet.walletEvmAddress
+    val walletEvmFingerprint: StateFlow<String> = identityFleet.walletEvmFingerprint
+    val walletLastSignature: StateFlow<RootKeyHub.WalletChallengeSignature?> = identityFleet.walletLastSignature
+    val walletSignatureVerified: StateFlow<Boolean?> = identityFleet.walletSignatureVerified
+    val walletSpendAddress: StateFlow<String> = identityFleet.walletSpendAddress
+    val walletSpendPublicKeyHex: StateFlow<String> = identityFleet.walletSpendPublicKeyHex
+    val walletSpendFingerprint: StateFlow<String> = identityFleet.walletSpendFingerprint
+    val walletSpendLastSignature: StateFlow<RootKeyHub.WalletSpendSignature?> = identityFleet.walletSpendLastSignature
+    val walletSpendSignatureVerified: StateFlow<Boolean?> = identityFleet.walletSpendSignatureVerified
+    val fleetNodes: StateFlow<List<FleetNodeEntry>> = identityFleet.fleetNodes
 
     // --- Telemetry States directly linked to active seeder telemetry service ---
     val isCharging: StateFlow<Boolean> = TorrentSeederService.isCharging.asStateFlow()
@@ -370,7 +340,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val onboarded = RootKeyHub.isOnboarded(application)
         _isOnboarded.value = onboarded
         _isPinLocked.value = onboarded && !RootKeyHub.isNodeUnlocked()
-        _activeOnionAddress.value = RootKeyHub.getOnionAddress(application)
+        identityFleet.setUnitializedLabels()
         if (RootKeyHub.isNodeUnlocked()) {
             refreshWalletAndFleetFromHub()
         }
@@ -518,10 +488,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isPinLocked.value = false
                 _isUnlocked.value = true
                 _bip39Mnemonic.value = mnemonic
-                _activeOnionAddress.value = RootKeyHub.getOnionAddress(app)
                 refreshWalletAndFleetFromHub()
                 setupMasterPassword(pin, mnemonic)
-                addSystemLog("ONBOARDING", "Sovereign BIP-39 root keys initialized successfully. Identity: ${_activeOnionAddress.value}", "SUCCESS")
+                addSystemLog("ONBOARDING", "Sovereign BIP-39 root keys initialized successfully. Identity: ${activeOnionAddress.value}", "SUCCESS")
             }
         }
     }
@@ -544,11 +513,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _isUnlocked.value = false
                 _isPasswordSetup.value = false
                 _bip39Mnemonic.value = ""
-                _walletEvmAddress.value = ""
-                _walletEvmFingerprint.value = ""
-                _walletLastSignature.value = null
-                _walletSignatureVerified.value = null
-                _fleetNodes.value = emptyList()
+                identityFleet.clearOnLockOrWipe()
                 _simplexChatMessages.value = emptyList()
                 addSystemLog("PANIC", "EMERGENCY PANIC WIPE EXECUTED. All node secrets purged.", "CRITICAL")
             }
@@ -564,8 +529,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         RootKeyHub.lockNode()
         _isPinLocked.value = true
         _isUnlocked.value = false
-        _walletLastSignature.value = null
-        _walletSignatureVerified.value = null
+        identityFleet.clearOnLockOrWipe()
         addSystemLog("LOCK", "Node locked. Master keys purged from memory.", "PENDING")
     }
 
@@ -851,13 +815,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun generateNewOnionAddress() {
         viewModelScope.launch(Dispatchers.Default) {
-            if (RootKeyHub.isNodeUnlocked()) {
-                val appLabel = RootKeyHub.deriveTorOnionAddress()
-                val canonicalV3 = RootKeyHub.deriveTorOnionV3Canonical()
-                _activeOnionAddress.value = appLabel
-                _activeCanonicalOnionV3.value = canonicalV3
-                _simplexOnionAddress.value = appLabel
-                addSystemLog("TOR_ROUTE", "Synchronized deterministic identity ($appLabel) & canonical v3 format (${canonicalV3.take(16)}...)", "SUCCESS")
+            val pair = identityFleet.refreshFromHub()
+            if (pair != null) {
+                _simplexOnionAddress.value = pair.first
+                addSystemLog("TOR_ROUTE", "Synchronized deterministic identity (${pair.first}) & canonical v3 format (${pair.second.take(16)}...)", "SUCCESS")
             } else {
                 addSystemLog("TOR_ROUTE", "Cannot derive deterministic onion identity while node is locked.", "FAILED")
             }
@@ -891,9 +852,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val bytesCount = rawContent.toByteArray().size
                 val sizeLabel = "${bytesCount} bytes"
                 
-                // Simulate share url
+                // Generate share link identifier using SecureRandom
                 val onionHost = _simplexOnionAddress.value
-                val linkId = (100000..999999).random()
+                val linkId = java.security.SecureRandom().nextInt(900000) + 100000
                 val sharedLink = "http://$onionHost/share/v1-id=$linkId?hash=${Base64.encodeToString(name.toByteArray(), Base64.NO_WRAP).take(12)}"
                 
                 val shared = SharedFile(
@@ -1314,8 +1275,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val nextPeerBytes = digest.digest((oldPeerKey + "peer_salt").toByteArray(Charsets.UTF_8))
             _peerEphemeralPublicKey.value = nextPeerBytes.joinToString("") { String.format("%02x", it) }
         } catch (e: Exception) {
-            _clientEphemeralPublicKey.value = "7fa2c0382dcf3eb94a1012fcd863ab9456bc38f29ea1039da81ef" + (1000..9999).random()
-            _peerEphemeralPublicKey.value = "9b65fc8e12a45bc38db945038c92bfa04859bc019de8cba0302bf" + (1000..9999).random()
+            val sr = java.security.SecureRandom()
+            val cRand = ByteArray(4).also { sr.nextBytes(it) }.joinToString("") { "%02x".format(it) }
+            val pRand = ByteArray(4).also { sr.nextBytes(it) }.joinToString("") { "%02x".format(it) }
+            _clientEphemeralPublicKey.value = "7fa2c0382dcf3eb94a1012fcd863ab9456bc38f29ea1039da81ef$cRand"
+            _peerEphemeralPublicKey.value = "9b65fc8e12a45bc38db945038c92bfa04859bc019de8cba0302bf$pRand"
         }
         _doubleRatchetSequence.value = _doubleRatchetSequence.value + 1
         addSystemLog("KEY_ROTATION", "Ephemeral Session Key Handshake Completed. Double Ratchet advanced.", "SUCCESS")
@@ -1777,153 +1741,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Node Controller & Debugger Reactive States ---
-    private val _nodeState = MutableStateFlow("RUNNING") // RUNNING, STOPPED, RESTARTING
-    val nodeState: StateFlow<String> = _nodeState.asStateFlow()
-
-    private val _isDiagnosing = MutableStateFlow(false)
-    val isDiagnosing: StateFlow<Boolean> = _isDiagnosing.asStateFlow()
-
-    private val _diagnosticsProgress = MutableStateFlow(0f)
-    val diagnosticsProgress: StateFlow<Float> = _diagnosticsProgress.asStateFlow()
-
-    private val _diagnosticsResults = MutableStateFlow<List<Pair<String, String>>>(emptyList())
-    val diagnosticsResults: StateFlow<List<Pair<String, String>>> = _diagnosticsResults.asStateFlow()
-
-    // Generated Security Reports
-    private val _securityReports = MutableStateFlow<List<String>>(listOf(
-        "Аудит безопасности контейнеров БД (SQLite-ChaCha20-Poly1305)",
-        "Статистика односторонних очередей SimpleX P2P",
-        "Протокол ротации сессионных ключей Double Ratchet",
-        "Анализ сетевой защищённости и утечек DNS-трафика"
-    ))
-    val securityReports: StateFlow<List<String>> = _securityReports.asStateFlow()
-
-    // Node Control Operations
-    fun startNode() {
-        if (_nodeState.value == "RUNNING") return
-        _nodeState.value = "RUNNING"
-        addSystemLog("NODE_CONTROL", "Службы ноды запущены через панель управления.", "SUCCESS")
-        addCloudSyncLog("SYSTEM: Node services successfully STARTED.")
-        addTorLog("SYSTEM: Daemon listening on port 9050. Relay queues synchronized.")
-        toggleTor(true)
-        toggleTorrentSeeding(true)
-    }
-
-    fun stopNode() {
-        if (_nodeState.value == "STOPPED") return
-        _nodeState.value = "STOPPED"
-        addSystemLog("NODE_CONTROL", "Службы ноды остановлены администратором.", "FAILED")
-        addCloudSyncLog("SYSTEM: Node services SHUTDOWN.")
-        addTorLog("SYSTEM: Daemon listening TERMINATED. Connection pools severed.")
-        toggleTor(false)
-        toggleTorrentSeeding(false)
-    }
-
-    fun restartNode() {
-        viewModelScope.launch {
-            _nodeState.value = "RESTARTING"
-            addSystemLog("NODE_CONTROL", "Инициирована перезагрузка ноды...", "PENDING")
-            addCloudSyncLog("SYSTEM: Re-initializing services (WARM REBOOT)...")
-            addTorLog("SYSTEM: Severing onion descriptors...")
-            toggleTor(false)
-            toggleTorrentSeeding(false)
-            delay(1200)
-            _nodeState.value = "RUNNING"
-            addSystemLog("NODE_CONTROL", "Перезагрузка ноды завершена успешно.", "SUCCESS")
-            addCloudSyncLog("SYSTEM: Warm reboot COMPLETED. Listening on routing socket.")
-            addTorLog("SYSTEM: Onion address re-registered successfully.")
-            toggleTor(true)
-            toggleTorrentSeeding(true)
-        }
-    }
-
-    fun runDiagnostics() {
-        if (_isDiagnosing.value) return
-        viewModelScope.launch {
-            _isDiagnosing.value = true
-            _diagnosticsProgress.value = 0f
-            val results = mutableListOf<Pair<String, String>>()
-            _diagnosticsResults.value = results
-
-            val steps = listOf(
-                "Проверка шифрования SQLite (ChaCha20-Poly1305)" to "SUCCESS",
-                "Ротация сессионных ключей Double Ratchet" to "SUCCESS",
-                "Проверка целостности рукопожатия Onion V3" to "SUCCESS",
-                "Целостность Zero-Knowledge бэкапов" to "SUCCESS",
-                "Защита от утечек DNS (SOCKS5 Leak Prevention)" to "SUCCESS"
+    // ==========================================
+    // --- NODE CONTROLLER & DIAGNOSTICS COORDINATOR (EXTRACTED STAGE 12) ---
+    // ==========================================
+    private val nodeDiagnostics = NodeDiagnosticsCoordinator(
+        scope = viewModelScope,
+        onToggleTor = { toggleTor(it) },
+        onToggleSeeding = { toggleTorrentSeeding(it) },
+        onSystemLog = ::addSystemLog,
+        onCloudSyncLog = ::addCloudSyncLog,
+        onTorLog = ::addTorLog,
+        telemetryProvider = {
+            NodeDiagnosticsCoordinator.TelemetrySnapshot(
+                torStatus = _torStatus.value,
+                tailscaleStatus = _tailscaleStatus.value,
+                zkCloudBackupEnabled = _zkCloudBackupEnabled.value,
+                zkCloudBackupStatus = _zkCloudBackupStatus.value,
+                walletProofAddress = walletEvmAddress.value,
+                walletSpendAddress = walletSpendAddress.value,
+                clientEphemeralKeyPrefix = _clientEphemeralPublicKey.value.take(12),
+                appIdentityLabel = activeOnionAddress.value,
+                canonicalOnionV3 = activeCanonicalOnionV3.value
             )
-
-            for (i in steps.indices) {
-                delay(800)
-                results.add(steps[i])
-                _diagnosticsResults.value = results.toList()
-                _diagnosticsProgress.value = (i + 1).toFloat() / steps.size
-            }
-            _isDiagnosing.value = false
-            addSystemLog("DIAGNOSTICS", "Полная диагностика безопасности завершена: 5/5 пройдены.", "SUCCESS")
-            addCloudSyncLog("DIAGNOSTICS: Secure diagnostics completed successfully. Status: GREEN.")
         }
-    }
+    )
 
-    // Command Interpreter for SimpleX Chat Administration Transport
-    fun interpretAdminCommand(command: String): String {
-        val cleanCmd = command.trim().lowercase()
-        return when {
-            cleanCmd == "/status" -> {
-                "=== NODE TELEMETRY ===\n" +
-                "Статус ноды: ${_nodeState.value}\n" +
-                "TOR Сеть: ${_torStatus.value}\n" +
-                "Tailscale: ${_tailscaleStatus.value}\n" +
-                "Zero-Knowledge Бэкап: ${if (_zkCloudBackupEnabled.value) "ВКЛЮЧЕН" else "ОТКЛЮЧЕН"}\n" +
-                "Статус бэкапа: ${_zkCloudBackupStatus.value}"
-            }
-            cleanCmd == "/start" -> {
-                if (_nodeState.value == "RUNNING") {
-                    "Службы ноды уже запущены и функционируют."
-                } else {
-                    startNode()
-                    "КОМАНДА ВЫПОЛНЕНА: Службы ноды запущены."
-                }
-            }
-            cleanCmd == "/stop" -> {
-                if (_nodeState.value == "STOPPED") {
-                    "Службы ноды уже остановлены."
-                } else {
-                    stopNode()
-                    "КОМАНДА ВЫПОЛНЕНА: Службы ноды остановлены."
-                }
-            }
-            cleanCmd == "/restart" -> {
-                restartNode()
-                "КОМАНДА ВЫПОЛНЕНА: Запущена перезагрузка ноды..."
-            }
-            cleanCmd == "/test" -> {
-                runDiagnostics()
-                "КОМАНДА ВЫПОЛНЕНА: Запущен пакет самодиагностики безопасности ноды. Проверьте модуль отладки."
-            }
-            cleanCmd == "/logs" -> {
-                "=== ПОСЛЕДНИЕ СОБЫТИЯ ===\n" +
-                "1. CLOUD_BACKUP: ${_zkCloudBackupStatus.value}\n" +
-                "2. NODE_STATE: ${_nodeState.value}\n" +
-                "3. TOR_DAEMON: ${_torStatus.value}"
-            }
-            cleanCmd == "/keys" -> {
-                "=== CRYPTO KEYS STATUS ===\n" +
-                "Node Unlocked: ${RootKeyHub.isNodeUnlocked()}\n" +
-                "PROOF Addr: ${_walletEvmAddress.value.ifBlank { "LOCKED" }}\n" +
-                "SPEND secp256k1: ${_walletSpendAddress.value.ifBlank { "LOCKED" }}\n" +
-                "Client Ratchet: ${_clientEphemeralPublicKey.value.take(12)}..."
-            }
-            cleanCmd == "/whoami" -> {
-                "App Identity Label: ${_activeOnionAddress.value}\n" +
-                "Canonical Tor v3: ${_activeCanonicalOnionV3.value.ifBlank { "LOCKED" }}"
-            }
-            else -> {
-                "НЕИЗВЕСТНАЯ КОМАНДА: '$command'\nДоступные команды управления:\n/status /start /stop /restart /test /logs /keys /whoami"
-            }
-        }
-    }
+    val nodeState: StateFlow<String> = nodeDiagnostics.nodeState
+    val isDiagnosing: StateFlow<Boolean> = nodeDiagnostics.isDiagnosing
+    val diagnosticsProgress: StateFlow<Float> = nodeDiagnostics.diagnosticsProgress
+    val diagnosticsResults: StateFlow<List<Pair<String, String>>> = nodeDiagnostics.diagnosticsResults
+    val securityReports: StateFlow<List<String>> = nodeDiagnostics.securityReports
+
+    fun startNode() = nodeDiagnostics.startNode()
+    fun stopNode() = nodeDiagnostics.stopNode()
+    fun restartNode() = nodeDiagnostics.restartNode()
+    fun runDiagnostics() = nodeDiagnostics.runDiagnostics()
+    fun interpretAdminCommand(command: String): String = nodeDiagnostics.interpretAdminCommand(command)
 
     fun addCloudSyncLog(log: String) {
         val formatLog = "[${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())}] $log"
@@ -2036,299 +1889,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ==========================================
-    // --- VPN PROTOCOLS (WireGuard, OpenVPN, Shadowsocks, V2Ray, Tailscale) ---
-    // ==========================================
-    val vpnProfiles: StateFlow<List<VpnProfile>> = VpnProtocolManager.profiles
-    val selectedVpnProfile: StateFlow<VpnProfile?> = VpnProtocolManager.selectedProfile
-    val vpnLogs: StateFlow<List<String>> = VpnProtocolManager.vpnLogs
-    val isVpnConnected: StateFlow<Boolean> = ParanoidVpnService.isVpnConnected
-    val activeVpnProtocol: StateFlow<VpnProtocolType> = ParanoidVpnService.activeProtocol
-    val vpnThroughput: StateFlow<String> = ParanoidVpnService.currentThroughput
-    val vpnBytesIn: StateFlow<Long> = ParanoidVpnService.bytesIn
-    val vpnBytesOut: StateFlow<Long> = ParanoidVpnService.bytesOut
-    val vpnDuration: StateFlow<Long> = ParanoidVpnService.connectionDurationSeconds
-
-    fun selectVpnProfile(profile: VpnProfile) {
-        VpnProtocolManager.selectProfile(profile)
-    }
-
-    fun connectVpn(profile: VpnProfile) {
-        VpnProtocolManager.startVpnTunnel(getApplication(), profile)
-        addSystemLog("VPN_CONNECT", "Initiated ${profile.protocol.displayName} tunnel to ${profile.serverAddress}", "SUCCESS")
-    }
-
-    fun disconnectVpn() {
-        VpnProtocolManager.stopVpnTunnel(getApplication())
-        addSystemLog("VPN_DISCONNECT", "VPN tunnel severed by user", "SUCCESS")
-    }
-
-    fun pingVpnProfile(profile: VpnProfile) {
-        viewModelScope.launch {
-            val ms = VpnProtocolManager.pingEndpoint(profile)
-            addSystemLog("VPN_PING", "Ping to ${profile.serverAddress}: ${ms}ms", "SUCCESS")
-        }
-    }
-
-    fun importCustomVpnProfile(name: String, protocol: VpnProtocolType, rawConfig: String) {
-        val parsed = when (protocol) {
-            VpnProtocolType.WIREGUARD -> VpnConfigParser.parseWireGuardConfig(rawConfig, name)
-            VpnProtocolType.OPENVPN -> VpnConfigParser.parseOpenVpnConfig(rawConfig, name)
-            VpnProtocolType.SHADOWSOCKS -> VpnConfigParser.parseShadowsocksUri(rawConfig, name)
-            else -> VpnProfile(name = name, protocol = protocol, serverAddress = "custom.paranoid-mesh.net", serverPort = protocol.defaultPort, rawConfig = rawConfig)
-        }
-        VpnProtocolManager.addCustomProfile(parsed)
-        addSystemLog("VPN_IMPORT", "Imported custom ${protocol.displayName} profile: $name", "SUCCESS")
-    }
-
-    // ==========================================
-    // --- UNIVERSAL WALLET (PROOF & SPEND secp256k1) & FLEET (STAGE 9 + 11) ---
+    // --- UNIVERSAL WALLET (PROOF & SPEND secp256k1) & FLEET (EXTRACTED STAGE 12) ---
+    // VPN Suite moved completely to VpnViewModel.kt.
     // ==========================================
 
     fun refreshWalletAndFleetFromHub() {
-        if (!RootKeyHub.isNodeUnlocked()) return
-        try {
-            // 1. Canonical Onion format + app identity label
-            _activeOnionAddress.value = RootKeyHub.deriveTorOnionAddress()
-            _activeCanonicalOnionV3.value = RootKeyHub.deriveTorOnionV3Canonical()
-            _simplexOnionAddress.value = _activeOnionAddress.value
-
-            // 2. PROOF mode (HMAC-SHA512 domain proof)
-            _walletEvmAddress.value = RootKeyHub.deriveWalletEvmAddress()
-            _walletEvmFingerprint.value = RootKeyHub.deriveWalletEvmFingerprint()
-
-            // 3. SPEND mode (true secp256k1 ECDSA)
-            _walletSpendAddress.value = RootKeyHub.deriveWalletSpendAddress()
-            _walletSpendPublicKeyHex.value = RootKeyHub.deriveWalletSpendPublicKeyHex()
-            _walletSpendFingerprint.value = RootKeyHub.deriveWalletSpendFingerprint()
-
-            loadOrInitializeFleetRegistry()
-        } catch (e: Exception) {
-            Log.e("MainViewModel", "Failed deriving wallet/fleet keys from RootKeyHub", e)
+        identityFleet.refreshFromHub()?.let { pair ->
+            _simplexOnionAddress.value = pair.first
         }
     }
 
-    fun signWalletChallenge(challenge: String) {
-        if (!RootKeyHub.isNodeUnlocked() || challenge.isBlank()) return
-        try {
-            val sig = RootKeyHub.signWalletChallenge(challenge)
-            _walletLastSignature.value = sig
-            _walletSignatureVerified.value = null
-            addSystemLog("WALLET_PROOF_SIGN", "Signed challenge via ParanoidX/Wallet/EVM/v1 (${sig.evmAddress.take(10)}...)", "SUCCESS")
-        } catch (e: Exception) {
-            addSystemLog("WALLET_PROOF_SIGN", "Challenge signing failed: ${e.message}", "FAILED")
-        }
-    }
+    fun signWalletChallenge(challenge: String) = identityFleet.signWalletChallenge(challenge)
+    fun verifyLastWalletChallenge(): Boolean = identityFleet.verifyLastWalletChallenge()
+    fun signWalletSpendChallenge(challenge: String) = identityFleet.signWalletSpendChallenge(challenge)
+    fun verifyLastWalletSpendChallenge(): Boolean = identityFleet.verifyLastWalletSpendChallenge()
 
-    fun verifyLastWalletChallenge(): Boolean {
-        val last = _walletLastSignature.value ?: return false
-        val ok = RootKeyHub.verifyWalletChallenge(last.challenge, last.signatureHex)
-        _walletSignatureVerified.value = ok
-        addSystemLog("WALLET_PROOF_VERIFY", "Local PROOF signature check: ${if (ok) "VALID" else "INVALID"}", if (ok) "SUCCESS" else "FAILED")
-        return ok
-    }
-
-    fun signWalletSpendChallenge(challenge: String) {
-        if (!RootKeyHub.isNodeUnlocked() || challenge.isBlank()) return
-        try {
-            val sig = RootKeyHub.signWalletSpendChallenge(challenge)
-            _walletSpendLastSignature.value = sig
-            _walletSpendSignatureVerified.value = null
-            addSystemLog("WALLET_SPEND_SIGN", "Signed EIP-191 digest with secp256k1 ECDSA (${sig.evmAddress.take(10)}..., v=${sig.v})", "SUCCESS")
-        } catch (e: Exception) {
-            addSystemLog("WALLET_SPEND_SIGN", "secp256k1 signing failed: ${e.message}", "FAILED")
-        }
-    }
-
-    fun verifyLastWalletSpendChallenge(): Boolean {
-        val last = _walletSpendLastSignature.value ?: return false
-        val ok = RootKeyHub.verifyWalletSpendChallenge(last.challenge, last.signatureHex)
-        _walletSpendSignatureVerified.value = ok
-        addSystemLog("WALLET_SPEND_VERIFY", "ECDSA secp256k1 verification: ${if (ok) "VALID" else "INVALID"}", if (ok) "SUCCESS" else "FAILED")
-        return ok
-    }
-
-    private fun loadOrInitializeFleetRegistry() {
-        val app = getApplication<Application>()
-        val prefs = app.getSharedPreferences("paranoidx_fleet_registry", Application.MODE_PRIVATE)
-        val rawJson = prefs.getString("fleet_nodes_json", null)
-        val parsed = mutableListOf<FleetNodeEntry>()
-
-        if (!rawJson.isNullOrBlank()) {
-            try {
-                val arr = JSONArray(rawJson)
-                for (i in 0 until arr.length()) {
-                    val obj = arr.getJSONObject(i)
-                    val idx = obj.getInt("nodeIndex")
-                    val crypto = RootKeyHub.deriveFleetNodeInfo(idx)
-                    parsed.add(
-                        FleetNodeEntry(
-                            nodeIndex = idx,
-                            label = obj.optString("label", if (idx == 0) "Primary Sovereign Node" else "Logical Node #$idx"),
-                            domainPath = crypto.domainPath,
-                            nodeId = crypto.nodeId,
-                            fingerprint = crypto.fingerprint,
-                            identityLabel = crypto.identityLabel,
-                            isLocal = idx == 0,
-                            transportHint = obj.optString("transportHint", if (idx == 0) "Local Device (Tor + P2P)" else "Tor / Tailscale Standby"),
-                            remoteEndpoint = obj.optString("remoteEndpoint", ""),
-                            linkProbeStatus = obj.optString("linkProbeStatus", if (idx == 0) "LOCAL" else "NOT_PROBED"),
-                            lastProbeRttMs = if (obj.has("lastProbeRttMs") && !obj.isNull("lastProbeRttMs")) obj.getInt("lastProbeRttMs") else null,
-                            lastProbeDetail = obj.optString("lastProbeDetail", ""),
-                            createdAt = obj.optLong("createdAt", System.currentTimeMillis())
-                        )
-                    )
-                }
-            } catch (e: Exception) {
-                Log.e("MainViewModel", "Error reading fleet registry JSON", e)
-            }
-        }
-
-        // Guarantee Node #0 (this physical device) is always present
-        if (parsed.none { it.nodeIndex == 0 }) {
-            val primaryCrypto = RootKeyHub.deriveFleetNodeInfo(0)
-            parsed.add(
-                0,
-                FleetNodeEntry(
-                    nodeIndex = 0,
-                    label = "Primary Sovereign Node",
-                    domainPath = primaryCrypto.domainPath,
-                    nodeId = primaryCrypto.nodeId,
-                    fingerprint = primaryCrypto.fingerprint,
-                    identityLabel = primaryCrypto.identityLabel,
-                    isLocal = true,
-                    transportHint = "Local Device (Tor + SimpleX + P2P)",
-                    remoteEndpoint = "127.0.0.1:${P2pCloudEngine.serverPort}",
-                    linkProbeStatus = "LOCAL"
-                )
-            )
-        }
-
-        _fleetNodes.value = parsed.sortedBy { it.nodeIndex }
-        saveFleetRegistry(_fleetNodes.value)
-    }
-
-    fun addLogicalFleetNode(label: String, transportHint: String = "Tor / Tailscale Remote", remoteEndpoint: String = "") {
-        if (!RootKeyHub.isNodeUnlocked()) return
-        val current = _fleetNodes.value
-        val nextIndex = (current.maxOfOrNull { it.nodeIndex } ?: 0) + 1
-        val crypto = RootKeyHub.deriveFleetNodeInfo(nextIndex)
-        val cleanLabel = label.trim().ifBlank { "Logical Node #$nextIndex" }
-        val entry = FleetNodeEntry(
-            nodeIndex = nextIndex,
-            label = cleanLabel,
-            domainPath = crypto.domainPath,
-            nodeId = crypto.nodeId,
-            fingerprint = crypto.fingerprint,
-            identityLabel = crypto.identityLabel,
-            isLocal = false,
-            transportHint = transportHint.trim().ifBlank { "Tor / Tailscale Remote" },
-            remoteEndpoint = remoteEndpoint.trim(),
-            linkProbeStatus = "NOT_PROBED"
-        )
-        val updated = (current + entry).sortedBy { it.nodeIndex }
-        _fleetNodes.value = updated
-        saveFleetRegistry(updated)
-        addSystemLog("FLEET", "Provisioned logical node #$nextIndex ('$cleanLabel') via ${crypto.domainPath}", "SUCCESS")
-    }
+    fun addLogicalFleetNode(label: String, transportHint: String = "Tor / Tailscale Remote", remoteEndpoint: String = "") =
+        identityFleet.addLogicalFleetNode(label, transportHint, remoteEndpoint)
 
     fun probeRemoteFleetNode(nodeIndex: Int, endpointInput: String) {
-        val cleanEndpoint = endpointInput.trim()
-        if (cleanEndpoint.isBlank()) {
-            _fleetNodes.value = _fleetNodes.value.map {
-                if (it.nodeIndex == nodeIndex) it.copy(linkProbeStatus = "UNCONFIGURED", lastProbeDetail = "No host:port endpoint")
-                else it
-            }
-            return
-        }
-
-        viewModelScope.launch {
-            val (host, port) = parseHostAndPort(cleanEndpoint, defaultPort = 443)
-            val startNs = System.nanoTime()
-            val result: Triple<String, Int?, String> = withContext(Dispatchers.IO) {
-                try {
-                    if (host.endsWith(".onion")) {
-                        val useTor = _torEnabled.value && _torStatus.value == "CONNECTED"
-                        if (!useTor) {
-                            return@withContext Triple("UNREACHABLE", null, "TOR_REQUIRED for .onion endpoint")
-                        }
-                        val ok = Socks5ProxyClient.testConnection(
-                            proxyHost = _socks5ProxyHost.value,
-                            proxyPort = _socks5ProxyPort.value,
-                            authMode = _socks5AuthMode.value,
-                            username = _socks5Username.value,
-                            password = _socks5Password.value,
-                            targetHost = host,
-                            targetPort = port,
-                            dnsLeakProtection = true,
-                            callback = object : Socks5ProxyClient.LogCallback {
-                                override fun onLog(message: String) {}
-                            }
-                        )
-                        val rtt = ((System.nanoTime() - startNs) / 1_000_000L).toInt().coerceAtLeast(1)
-                        if (ok) Triple("REACHABLE", rtt, "Tor SOCKS5 tunnel OK")
-                        else Triple("UNREACHABLE", null, "SOCKS5 tunnel refused")
-                    } else {
-                        Socket().use { sock ->
-                            sock.connect(InetSocketAddress(host, port), 2500)
-                        }
-                        val rtt = ((System.nanoTime() - startNs) / 1_000_000L).toInt().coerceAtLeast(1)
-                        Triple("REACHABLE", rtt, "TCP handshake $host:$port")
-                    }
-                } catch (e: Exception) {
-                    Triple("UNREACHABLE", null, e.message ?: "Connect failed")
-                }
-            }
-
-            val updated = _fleetNodes.value.map {
-                if (it.nodeIndex == nodeIndex) {
-                    it.copy(
-                        remoteEndpoint = cleanEndpoint,
-                        linkProbeStatus = result.first,
-                        lastProbeRttMs = result.second,
-                        lastProbeDetail = result.third
-                    )
-                } else it
-            }
-            _fleetNodes.value = updated
-            saveFleetRegistry(updated)
-            addSystemLog(
-                "FLEET_PROBE",
-                "Node #$nodeIndex ($cleanEndpoint): ${result.first}${result.second?.let { " ${it}ms" } ?: ""} (${result.third})",
-                if (result.first == "REACHABLE") "SUCCESS" else "FAILED"
-            )
-        }
+        identityFleet.probeRemoteFleetNode(
+            nodeIndex = nodeIndex,
+            endpointInput = endpointInput,
+            torActive = _torEnabled.value && _torStatus.value == "CONNECTED",
+            socksHost = _socks5ProxyHost.value,
+            socksPort = _socks5ProxyPort.value,
+            socksAuthMode = _socks5AuthMode.value,
+            socksUser = _socks5Username.value,
+            socksPass = _socks5Password.value,
+            hostPortParser = { parseHostAndPort(it, defaultPort = 443) }
+        )
     }
 
-    fun removeLogicalFleetNode(nodeIndex: Int) {
-        if (nodeIndex == 0) return // Primary device node #0 cannot be removed
-        val updated = _fleetNodes.value.filterNot { it.nodeIndex == nodeIndex }
-        _fleetNodes.value = updated
-        saveFleetRegistry(updated)
-        addSystemLog("FLEET", "Removed logical node #$nodeIndex from local fleet registry", "SUCCESS")
-    }
-
-    private fun saveFleetRegistry(nodes: List<FleetNodeEntry>) {
-        val arr = JSONArray()
-        nodes.forEach { n ->
-            arr.put(
-                JSONObject().apply {
-                    put("nodeIndex", n.nodeIndex)
-                    put("label", n.label)
-                    put("transportHint", n.transportHint)
-                    put("remoteEndpoint", n.remoteEndpoint)
-                    put("linkProbeStatus", n.linkProbeStatus)
-                    if (n.lastProbeRttMs != null) put("lastProbeRttMs", n.lastProbeRttMs)
-                    put("lastProbeDetail", n.lastProbeDetail)
-                    put("createdAt", n.createdAt)
-                }
-            )
-        }
-        getApplication<Application>()
-            .getSharedPreferences("paranoidx_fleet_registry", Application.MODE_PRIVATE)
-            .edit()
-            .putString("fleet_nodes_json", arr.toString())
-            .apply()
-    }
+    fun removeLogicalFleetNode(nodeIndex: Int) = identityFleet.removeLogicalFleetNode(nodeIndex)
 
     // ==========================================
     // --- RADIO POINT HEALTH ENGINE (STAGE 10) ---
@@ -2338,7 +1931,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isNetworkAvailable,
         _isWifiConnected,
         _torStatus,
-        isVpnConnected,
+        ParanoidVpnService.isVpnConnected,
         _torrentSeedingEnabled,
         _activeTorrentPeersCount
     ) { values ->

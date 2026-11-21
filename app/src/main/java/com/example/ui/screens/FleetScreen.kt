@@ -468,9 +468,13 @@ private fun FleetNodeCard(
                     color = palette.textMuted,
                     fontFamily = FontFamily.Monospace
                 )
-                if (node.remoteEndpoint.isNotBlank() || node.lastProbeDetail.isNotBlank()) {
+                if (node.remoteEndpoint.isNotBlank() || node.lastProbeDetail.isNotBlank() || node.lastProbeTimestamp != null) {
+                    val tsSuffix = node.lastProbeTimestamp?.let { ts ->
+                        val fmt = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+                        " • ${fmt.format(java.util.Date(ts))} (Manual)"
+                    } ?: ""
                     Text(
-                        text = "LINK PROBE: ${node.remoteEndpoint.ifBlank { "not set" }} • ${node.linkProbeStatus}${node.lastProbeRttMs?.let { " (${it}ms)" } ?: ""}",
+                        text = "LINK PROBE: ${node.remoteEndpoint.ifBlank { "not set" }} • ${node.linkProbeStatus}${node.lastProbeRttMs?.let { " (${it}ms)" } ?: ""}$tsSuffix",
                         fontSize = 10.sp,
                         color = if (node.linkProbeStatus == "REACHABLE") palette.accent else palette.textMuted,
                         fontFamily = FontFamily.Monospace

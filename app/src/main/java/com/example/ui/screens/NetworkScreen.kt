@@ -1,7 +1,10 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.network.vpn.VpnProfile
 import com.example.network.vpn.VpnProtocolType
 import com.example.network.smp.SmpProtocolEngine
@@ -38,10 +42,14 @@ import com.example.network.xftp.XftpProtocolEngine
 import com.example.ui.components.InAppGboardKeyboard
 import com.example.ui.theme.Localization
 import com.example.ui.viewmodel.MainViewModel
+import com.example.ui.viewmodel.VpnViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun NetworkScreen(viewModel: MainViewModel) {
+fun NetworkScreen(
+    viewModel: MainViewModel,
+    vpnViewModel: VpnViewModel = viewModel()
+) {
     val currentLanguage by viewModel.currentLanguage.collectAsState()
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
@@ -69,16 +77,30 @@ fun NetworkScreen(viewModel: MainViewModel) {
     val socks5Logs by viewModel.socks5Logs.collectAsState()
     val isTestingSocks5 by viewModel.isTestingSocks5.collectAsState()
 
-    // VPN state
-    val vpnProfiles by viewModel.vpnProfiles.collectAsState()
-    val selectedVpnProfile by viewModel.selectedVpnProfile.collectAsState()
-    val isVpnConnected by viewModel.isVpnConnected.collectAsState()
-    val activeVpnProtocol by viewModel.activeVpnProtocol.collectAsState()
-    val vpnThroughput by viewModel.vpnThroughput.collectAsState()
-    val vpnBytesIn by viewModel.vpnBytesIn.collectAsState()
-    val vpnBytesOut by viewModel.vpnBytesOut.collectAsState()
-    val vpnDuration by viewModel.vpnDuration.collectAsState()
-    val vpnLogs by viewModel.vpnLogs.collectAsState()
+    // VPN state (Delegated to VpnViewModel — Stage 12)
+    val vpnProfiles by vpnViewModel.vpnProfiles.collectAsState()
+    val selectedVpnProfile by vpnViewModel.selectedVpnProfile.collectAsState()
+    val isVpnConnected by vpnViewModel.isVpnConnected.collectAsState()
+    val activeVpnProtocol by vpnViewModel.activeVpnProtocol.collectAsState()
+    val vpnThroughput by vpnViewModel.vpnThroughput.collectAsState()
+    val vpnBytesIn by vpnViewModel.vpnBytesIn.collectAsState()
+    val vpnBytesOut by vpnViewModel.vpnBytesOut.collectAsState()
+    val vpnDuration by vpnViewModel.vpnDuration.collectAsState()
+    val vpnStatusDetail by vpnViewModel.vpnStatusDetail.collectAsState()
+    val vpnLastPingResult by vpnViewModel.vpnLastPingResult.collectAsState()
+    val vpnLogs by vpnViewModel.vpnLogs.collectAsState()
+
+    var pendingVpnConnectProfile by remember { mutableStateOf<VpnProfile?>(null) }
+    val vpnPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { res ->
+        if (res.resultCode == Activity.RESULT_OK) {
+            pendingVpnConnectProfile?.let { vpnViewModel.connectVpn(it) }
+        } else {
+            vpnViewModel.markPermissionDenied()
+        }
+        pendingVpnConnectProfile = null
+    }
 
     // SMP state
     val smpQueues by viewModel.smpQueues.collectAsState()
@@ -587,26 +609,34 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Column {
                                                 Text(
-                                                    text = if (isVpnConnected) "VPN TUNNEL ACTIVE" else "VPN TUNNEL DISCONNECTED",
+                                                    text = if (isVpnConnected) "TUN INTERFACE ACTIVE" else "VPN TUNNEL DISCONNECTED",
                                                     fontWeight = FontWeight.Bold,
                                                     fontSize = 13.sp,
                                                     color = if (isVpnConnected) Color(0xFF00E676) else MaterialTheme.colorScheme.onSurface
                                                 )
                                                 Text(
-                                                    text = "Protocol: ${activeVpnProtocol.displayName}",
+                                                    text = "Profile Protocol: ${activeVpnProtocol.displayName}",
                                                     fontSize = 10.sp,
                                                     color = MaterialTheme.colorScheme.primary
                                                 )
                                             }
                                         }
 
-                                        // Connect/Disconnect Button
+                                        // Connect/Disconnect Button (with OS VpnService.prepare consent)
                                         Button(
                                             onClick = {
                                                 if (isVpnConnected) {
-                                                    viewModel.disconnectVpn()
+                                                    vpnViewModel.disconnectVpn()
                                                 } else {
-                                                    selectedVpnProfile?.let { viewModel.connectVpn(it) }
+                                                    selectedVpnProfile?.let { profile ->
+                                                        val consentIntent = vpnViewModel.prepareVpnConsentIntent()
+                                                        if (consentIntent != null) {
+                                                            pendingVpnConnectProfile = profile
+                                                            vpnPermissionLauncher.launch(consentIntent)
+                                                        } else {
+                                                            vpnViewModel.connectVpn(profile)
+                                                        }
+                                                    }
                                                 }
                                             },
                                             colors = ButtonDefaults.buttonColors(
@@ -624,9 +654,38 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                         }
                                     }
 
-                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Spacer(modifier = Modifier.height(8.dp))
 
-                                    // Live Metrics Row
+                                    // Honest TUN engine status banner
+                                    Text(
+                                        text = vpnStatusDetail,
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = if (vpnStatusDetail.startsWith("UNAVAILABLE") || vpnStatusDetail.startsWith("ERROR")) {
+                                            Color(0xFFFF8A80)
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        modifier = Modifier.testTag("vpn_honest_status_detail")
+                                    )
+
+                                    vpnLastPingResult?.let { pingRes ->
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = if (pingRes.reachable) {
+                                                "LAST TCP PROBE: ${pingRes.host}:${pingRes.port} REACHABLE (${pingRes.rttMs}ms)"
+                                            } else {
+                                                "LAST TCP PROBE: ${pingRes.host}:${pingRes.port} UNREACHABLE (${pingRes.detail})"
+                                            },
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = if (pingRes.reachable) Color(0xFF00E676) else Color(0xFFFFB74D)
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(10.dp))
+
+                                    // Live App UID TrafficStats Metrics Row (Zero fabricated traffic)
                                     Row(
                                         modifier = Modifier
                                             .fillMaxWidth()
@@ -636,7 +695,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Column {
-                                            Text("THROUGHPUT", fontSize = 8.sp, color = MaterialTheme.colorScheme.outline)
+                                            Text("UID RATE", fontSize = 8.sp, color = MaterialTheme.colorScheme.outline)
                                             Text(if (isVpnConnected) vpnThroughput else "0 KB/s", fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                                         }
                                         Column {
@@ -699,7 +758,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                         color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.1f),
                                         shape = RoundedCornerShape(10.dp)
                                     )
-                                    .clickable { viewModel.selectVpnProfile(profile) }
+                                    .clickable { vpnViewModel.selectVpnProfile(profile) }
                                     .testTag("vpn_profile_${profile.protocol.name}")
                             ) {
                                 Row(
@@ -712,7 +771,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                                         RadioButton(
                                             selected = isSelected,
-                                            onClick = { viewModel.selectVpnProfile(profile) }
+                                            onClick = { vpnViewModel.selectVpnProfile(profile) }
                                         )
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Column {
@@ -723,8 +782,9 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                                     Text(profile.protocol.displayName, fontSize = 8.sp)
                                                 }
                                             }
+                                            val pingLabel = if (profile.lastPingMs > 0) "${profile.lastPingMs}ms" else "UNPROBED"
                                             Text(
-                                                text = "${profile.serverAddress}:${profile.serverPort}",
+                                                text = "${profile.serverAddress}:${profile.serverPort} • $pingLabel",
                                                 fontSize = 10.sp,
                                                 fontFamily = FontFamily.Monospace,
                                                 color = MaterialTheme.colorScheme.outline
@@ -734,7 +794,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
 
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         TextButton(
-                                            onClick = { viewModel.pingVpnProfile(profile) },
+                                            onClick = { vpnViewModel.pingVpnProfile(profile) },
                                             modifier = Modifier.testTag("ping_profile_${profile.id}")
                                         ) {
                                             Icon(Icons.Outlined.Speed, contentDescription = null, modifier = Modifier.size(14.dp))
@@ -1136,7 +1196,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
                         Button(
                             onClick = {
                                 if (profileName.isNotBlank() && rawConfigText.isNotBlank()) {
-                                    viewModel.importCustomVpnProfile(profileName.trim(), selectedProtocol, rawConfigText.trim())
+                                    vpnViewModel.importCustomVpnProfile(profileName.trim(), selectedProtocol, rawConfigText.trim())
                                     showImportVpnDialog = false
                                 }
                             }
@@ -1150,7 +1210,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
                         },
                         onSendOrDone = {
                             if (profileName.isNotBlank() && rawConfigText.isNotBlank()) {
-                                viewModel.importCustomVpnProfile(profileName.trim(), selectedProtocol, rawConfigText.trim())
+                                vpnViewModel.importCustomVpnProfile(profileName.trim(), selectedProtocol, rawConfigText.trim())
                                 showImportVpnDialog = false
                             }
                         },

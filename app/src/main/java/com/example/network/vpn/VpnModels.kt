@@ -26,7 +26,18 @@ data class VpnProfile(
     val dnsServers: List<String> = listOf("1.1.1.1", "9.9.9.9"),
     val splitTunneling: Boolean = false,
     val killSwitchEnabled: Boolean = true,
-    val lastPingMs: Int = 0
+    val lastPingMs: Int = -1
+)
+
+// [REAL] Этап 12: Результат реального TCP-зонда до VPN-сервера (без random/delay).
+data class VpnPingResult(
+    val profileId: String,
+    val host: String,
+    val port: Int,
+    val reachable: Boolean,
+    val rttMs: Int?,
+    val detail: String,
+    val timestampMs: Long = System.currentTimeMillis()
 )
 
 /**
@@ -159,7 +170,7 @@ object VpnConfigParser {
                     Endpoint = wg-de1.paranoid-mesh.net:51820
                     AllowedIPs = 0.0.0.0/0, ::/0
                 """.trimIndent(),
-                lastPingMs = 38
+                lastPingMs = -1
             ),
             VpnProfile(
                 name = "OpenVPN Secure Shield",
@@ -179,7 +190,7 @@ object VpnConfigParser {
                     auth SHA256
                     verb 3
                 """.trimIndent(),
-                lastPingMs = 45
+                lastPingMs = -1
             ),
             VpnProfile(
                 name = "Shadowsocks AEAD (Bypass)",
@@ -187,7 +198,7 @@ object VpnConfigParser {
                 serverAddress = "ss-ch1.paranoid-mesh.net",
                 serverPort = 8388,
                 rawConfig = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ=@ss-ch1.paranoid-mesh.net:8388#Shadowsocks%20AEAD",
-                lastPingMs = 28
+                lastPingMs = -1
             ),
             VpnProfile(
                 name = "V2Ray VMess (TLS Camouflage)",
@@ -207,7 +218,7 @@ object VpnConfigParser {
                       "tls": "tls"
                     }
                 """.trimIndent(),
-                lastPingMs = 92
+                lastPingMs = -1
             ),
             VpnProfile(
                 name = "Tailscale Mesh Node",
@@ -220,7 +231,7 @@ object VpnConfigParser {
                     DERP Regions: Frankfurt (fra), Amsterdam (ams)
                     MagicDNS: Enabled (.ts.net)
                 """.trimIndent(),
-                lastPingMs = 24
+                lastPingMs = -1
             )
         )
     }

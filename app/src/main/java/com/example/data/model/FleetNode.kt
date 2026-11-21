@@ -24,5 +24,6 @@ data class FleetNodeEntry(
     val linkProbeStatus: String = if (isLocal) "LOCAL" else "NOT_PROBED", // NOT_PROBED, REACHABLE, UNREACHABLE
     val lastProbeRttMs: Int? = null,
     val lastProbeDetail: String = "",
+    val lastProbeTimestamp: Long? = null,
     val createdAt: Long = System.currentTimeMillis()
 )

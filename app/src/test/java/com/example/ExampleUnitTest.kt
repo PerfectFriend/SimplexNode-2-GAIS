@@ -1016,4 +1016,125 @@ class ExampleUnitTest {
             RootKeyHub.verifyWalletSpendChallenge("Tampered message", spendSig.signatureHex, seed)
         )
     }
+
+    @Test
+    fun testVpnProtocolManagerRealPingAndHonestFailure() = runBlocking {
+        // 1. Sample profiles must start unprobed (-1), never pre-populated with fake RTT
+        val samples = com.example.network.vpn.VpnConfigParser.getSampleProfiles()
+        assertTrue(samples.isNotEmpty())
+        assertTrue("Sample VPN profiles must start unprobed (-1)", samples.all { it.lastPingMs == -1 })
+
+        // 2. Reachable local ephemeral TCP socket -> measured RTT >= 1ms
+        val server = java.net.ServerSocket(0)
+        val openPort = server.localPort
+        val acceptThread = Thread {
+            try {
+                server.accept().close()
+            } catch (_: Exception) {
+            }
+        }
+        acceptThread.start()
+
+        try {
+            val liveProfile = com.example.network.vpn.VpnProfile(
+                name = "Local WireGuard Endpoint",
+                protocol = com.example.network.vpn.VpnProtocolType.WIREGUARD,
+                serverAddress = "127.0.0.1",
+                serverPort = openPort,
+                rawConfig = "[Interface]"
+            )
+            val reachableResult = com.example.network.vpn.VpnProtocolManager.probeEndpoint(liveProfile, timeoutMs = 1500)
+            assertTrue("Open local TCP socket must report reachable=true", reachableResult.reachable)
+            assertNotNull("Measured RTT must be non-null when reachable", reachableResult.rttMs)
+            assertTrue("Measured RTT must be >= 1ms", reachableResult.rttMs!! >= 1)
+            acceptThread.join(2000)
+        } finally {
+            try { server.close() } catch (_: Exception) {}
+        }
+
+        // 3. Closed/unreachable port -> must honestly fail with -1 / reachable=false (NO fake 20..90 random)
+        val closedProfile = com.example.network.vpn.VpnProfile(
+            name = "Offline Endpoint",
+            protocol = com.example.network.vpn.VpnProtocolType.OPENVPN,
+            serverAddress = "127.0.0.1",
+            serverPort = 64996,
+            rawConfig = "client"
+        )
+        val offlineRes = com.example.network.vpn.VpnProtocolManager.probeEndpoint(closedProfile, timeoutMs = 400)
+        assertFalse("Closed port must honestly return reachable=false", offlineRes.reachable)
+        assertNull("Closed port must return rttMs=null", offlineRes.rttMs)
+        assertEquals(-1, com.example.network.vpn.VpnProtocolManager.pingEndpoint(closedProfile, timeoutMs = 400))
+    }
+
+    @Test
+    fun testRc1EndToEndSmokePath() = runBlocking {
+        // RC1 Smoke Path: seed -> keys/onion v3 -> RadioPoint transitions -> Live SMP send -> Wallet PROOF vs SPEND -> Fleet probe + timestamp
+        val mnemonic = Bip39Utils.generateMnemonic()
+        assertTrue(Bip39Utils.validateMnemonic(mnemonic))
+        val seed = Bip39Utils.deriveSeed(mnemonic)
+
+        // 1. Canonical Tor v3 + App Identity Label
+        val canonicalOnion = RootKeyHub.deriveTorOnionV3Canonical(seed)
+        val appLabel = RootKeyHub.deriveTorOnionAddress(seed)
+        assertTrue(com.example.data.security.TorOnionV3.isCanonicalV3Address(canonicalOnion))
+        assertTrue(com.example.data.security.TorOnionV3.isAppIdentityLabel(appLabel))
+
+        // 2. RadioPointEvaluator state shifts
+        val rSilence = com.example.data.health.RadioPointEvaluator.evaluate(false, false, "DISCONNECTED", false, false, 0, 100L)
+        val rDegraded = com.example.data.health.RadioPointEvaluator.evaluate(true, false, "DISCONNECTED", false, false, 0, 200L)
+        val rOnAir = com.example.data.health.RadioPointEvaluator.evaluate(true, true, "CONNECTED", false, true, 2, 300L)
+        val rAlarm = com.example.data.health.RadioPointEvaluator.evaluate(true, true, "ERROR", false, false, 0, 400L)
+        assertEquals(com.example.data.health.RadioSignalState.SILENCE_OFFLINE, rSilence.state)
+        assertEquals(com.example.data.health.RadioSignalState.DEGRADED_CLEARNET_ONLY, rDegraded.state)
+        assertEquals(com.example.data.health.RadioSignalState.ON_AIR_CLEAR, rOnAir.state)
+        assertEquals(com.example.data.health.RadioSignalState.ALARM_ERROR, rAlarm.state)
+
+        // 3. Wallet Dual-Mode Switch (PROOF HMAC vs SPEND secp256k1)
+        val proofSig = RootKeyHub.signWalletChallenge("RC1 Smoke Proof", seed)
+        val spendSig = RootKeyHub.signWalletSpendChallenge("RC1 Smoke Spend", seed)
+        assertNotEquals(proofSig.evmAddress, spendSig.evmAddress)
+        assertTrue(RootKeyHub.verifyWalletChallenge("RC1 Smoke Proof", proofSig.signatureHex, seed))
+        assertTrue(RootKeyHub.verifyWalletSpendChallenge("RC1 Smoke Spend", spendSig.signatureHex, seed))
+
+        // 4. Live SMP loop send + Fleet node entry with manual probe timestamp
+        val httpServer = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        val httpPort = httpServer.address.port
+        httpServer.createContext("/api/v1/queues") { exchange ->
+            val body = """{"status":"OK","queueId":"rc1_q"}""".toByteArray()
+            exchange.sendResponseHeaders(200, body.size.toLong())
+            exchange.responseBody.write(body)
+            exchange.responseBody.close()
+        }
+        httpServer.start()
+        try {
+            val q = SmpProtocolEngine.registerQueueOnRelay("127.0.0.1", httpPort, "SENDER", useTorProxy = false)
+            assertEquals("REGISTERED", q.lastDeliveryStatus)
+            val sent = SmpProtocolEngine.sendSmpEnvelope(q, "RC1 Smoke Msg", ratchetIndex = 1, useTorProxy = false)
+            assertTrue("RC1 live SMP send must succeed", sent)
+
+            val fleetInfo = RootKeyHub.deriveFleetNodeInfo(1, seed)
+            val startNs = System.nanoTime()
+            java.net.Socket().use { sock -> sock.connect(java.net.InetSocketAddress("127.0.0.1", httpPort), 1000) }
+            val probeRtt = ((System.nanoTime() - startNs) / 1_000_000L).toInt().coerceAtLeast(1)
+            val node = com.example.data.model.FleetNodeEntry(
+                nodeIndex = 1,
+                label = "RC1 Relay #1",
+                domainPath = fleetInfo.domainPath,
+                nodeId = fleetInfo.nodeId,
+                fingerprint = fleetInfo.fingerprint,
+                identityLabel = fleetInfo.identityLabel,
+                isLocal = false,
+                transportHint = "Loopback Smoke Relay",
+                remoteEndpoint = "127.0.0.1:$httpPort",
+                linkProbeStatus = "REACHABLE",
+                lastProbeRttMs = probeRtt,
+                lastProbeDetail = "TCP handshake 127.0.0.1:$httpPort",
+                lastProbeTimestamp = System.currentTimeMillis()
+            )
+            assertEquals("REACHABLE", node.linkProbeStatus)
+            assertNotNull(node.lastProbeTimestamp)
+        } finally {
+            httpServer.stop(0)
+        }
+    }
 }

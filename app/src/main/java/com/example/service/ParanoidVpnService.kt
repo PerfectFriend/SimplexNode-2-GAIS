@@ -57,6 +57,9 @@ class ParanoidVpnService : VpnService() {
         val bytesOut = MutableStateFlow(0L)
         val currentThroughput = MutableStateFlow("0 KB/s")
         val connectionDurationSeconds = MutableStateFlow(0L)
+        // [REAL] Этап 12: Честный статус TUN-интерфейса (никогда не имитирует активный туннель при null establish()).
+        val vpnStatusDetail = MutableStateFlow("DISCONNECTED")
+        val vpnEngineMode = MutableStateFlow("TUN_ONLY_NO_NATIVE_ENGINE")
     }
 
     override fun onCreate() {
@@ -93,10 +96,15 @@ class ParanoidVpnService : VpnService() {
         }
 
         try {
-            startForeground(NOTIFICATION_ID, buildNotification("Establishing ${protocol.displayName} Tunnel..."))
-            
+            startForeground(NOTIFICATION_ID, buildNotification("Establishing ${protocol.displayName} TUN..."))
+
+            bytesIn.value = 0L
+            bytesOut.value = 0L
+            currentThroughput.value = "0 KB/s"
+            connectionDurationSeconds.value = 0L
+
             val builder = Builder()
-                .setSession("ParanoidX ${protocol.displayName}")
+                .setSession("PXNode ${protocol.displayName}")
                 .setMtu(1420)
                 .addAddress("10.8.0.2", 24)
                 .addDnsServer("1.1.1.1")
@@ -104,41 +112,65 @@ class ParanoidVpnService : VpnService() {
                 .addRoute("0.0.0.0", 0)
 
             // Attempt establishing TUN interface via Android kernel
-            vpnInterface = builder.establish()
+            val pfd = builder.establish()
+            if (pfd == null) {
+                isVpnConnected.value = false
+                vpnInterface = null
+                vpnStatusDetail.value = "UNAVAILABLE • OS VpnService consent required or TUN rejected"
+                com.example.network.vpn.VpnProtocolManager.log(
+                    "TUN establish() returned null — grant Android VPN permission or test on physical TUN-capable device."
+                )
+                Log.w(TAG, "Builder.establish() returned null; refusing to report fake VPN connection")
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return
+            }
 
+            vpnInterface = pfd
             activeProfileName.value = profileName
             activeProtocol.value = protocol
             isVpnConnected.value = true
-            bytesIn.value = 14200L
-            bytesOut.value = 8600L
+            vpnEngineMode.value = "TUN_ONLY_NO_NATIVE_ENGINE"
+            vpnStatusDetail.value = "TUN ACTIVE (Local Interface Only • No native WireGuard/OpenVPN packet daemon bundled)"
 
-            updateNotification("Connected to $profileName ($server:$port)")
-            Log.i(TAG, "VPN TUN Interface established for ${protocol.displayName} on $server:$port")
+            updateNotification("TUN Active: $profileName ($server:$port)")
+            Log.i(TAG, "VPN TUN Interface established for ${protocol.displayName} targeting $server:$port (TUN-only mode)")
 
-            startTrafficSimulation(vpnInterface)
+            startHonestTelemetryMonitor()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to establish VPN interface", e)
+            vpnStatusDetail.value = "ERROR: ${e.message ?: "TUN establish failed"}"
             disconnectTunnel()
         }
     }
 
-    private fun startTrafficSimulation(pfd: ParcelFileDescriptor?) {
+    // [REAL] Этап 12: Измеряет только реальные счётчики ОС TrafficStats по UID процесса (никаких .random() дельт).
+    private fun startHonestTelemetryMonitor() {
         trafficMonitorJob?.cancel()
         trafficMonitorJob = serviceScope.launch {
+            val uid = android.os.Process.myUid()
+            var prevRx = android.net.TrafficStats.getUidRxBytes(uid)
+            var prevTx = android.net.TrafficStats.getUidTxBytes(uid)
+            val unsupported = android.net.TrafficStats.UNSUPPORTED.toLong()
             var counter = 0L
-            while (isVpnConnected.value) {
+
+            while (isVpnConnected.value && vpnInterface != null) {
                 delay(1000)
                 counter++
                 connectionDurationSeconds.value = counter
 
-                // Add simulated network packet exchange through the active tunnel
-                val deltaIn = (15000..85000).random().toLong()
-                val deltaOut = (8000..45000).random().toLong()
+                val curRx = android.net.TrafficStats.getUidRxBytes(uid)
+                val curTx = android.net.TrafficStats.getUidTxBytes(uid)
+                val deltaIn = if (curRx != unsupported && prevRx != unsupported && curRx >= prevRx) curRx - prevRx else 0L
+                val deltaOut = if (curTx != unsupported && prevTx != unsupported && curTx >= prevTx) curTx - prevTx else 0L
+                prevRx = curRx
+                prevTx = curTx
+
                 bytesIn.value += deltaIn
                 bytesOut.value += deltaOut
 
                 val speedKb = (deltaIn + deltaOut) / 1024f
-                currentThroughput.value = if (speedKb > 1024) {
+                currentThroughput.value = if (speedKb > 1024f) {
                     String.format(java.util.Locale.US, "%.1f MB/s", speedKb / 1024f)
                 } else {
                     String.format(java.util.Locale.US, "%.0f KB/s", speedKb)
@@ -152,6 +184,9 @@ class ParanoidVpnService : VpnService() {
         isVpnConnected.value = false
         connectionDurationSeconds.value = 0L
         currentThroughput.value = "0 KB/s"
+        if (!vpnStatusDetail.value.startsWith("UNAVAILABLE") && !vpnStatusDetail.value.startsWith("ERROR")) {
+            vpnStatusDetail.value = "DISCONNECTED"
+        }
 
         try {
             vpnInterface?.close()
@@ -160,7 +195,7 @@ class ParanoidVpnService : VpnService() {
             Log.e(TAG, "Error closing VPN interface", e)
         }
 
-        stopForeground(true)
+        stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         Log.i(TAG, "VPN Tunnel cleanly disconnected.")
     }

@@ -8,11 +8,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 
-/**
- * High-level VPN Orchestrator for ParanoidX Node.
- * Manages VPN profile collections, connects tunnels across protocols
- * (WireGuard, OpenVPN, Shadowsocks, V2Ray VMess, Tailscale), and computes ping metrics.
- */
+import java.net.InetSocketAddress
+import java.net.Socket
+
+// [REAL] Этап 12: Оркестратор VPN-профилей с честной TCP-проверкой endpoint-а (без random/delay).
+// [SIM] Собственные нативные движки WireGuard/OpenVPN не вшиты — ParanoidVpnService поднимает системный TUN без user-space шифрующего демона.
 object VpnProtocolManager {
 
     private val _profiles = MutableStateFlow<List<VpnProfile>>(VpnConfigParser.getSampleProfiles())
@@ -23,6 +23,9 @@ object VpnProtocolManager {
 
     private val _vpnLogs = MutableStateFlow<List<String>>(emptyList())
     val vpnLogs = _vpnLogs.asStateFlow()
+
+    private val _lastPingResult = MutableStateFlow<VpnPingResult?>(null)
+    val lastPingResult = _lastPingResult.asStateFlow()
 
     fun log(msg: String) {
         val time = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
@@ -50,10 +53,10 @@ object VpnProtocolManager {
     }
 
     /**
-     * Dispatches intent to ParanoidVpnService to start TUN interface and protocol routing.
+     * Dispatches intent to ParanoidVpnService to request OS TUN interface creation.
      */
     fun startVpnTunnel(context: Context, profile: VpnProfile) {
-        log("CONNECT: Initiating tunnel for ${profile.name} using ${profile.protocol.displayName}...")
+        log("CONNECT: Requesting OS TUN interface for ${profile.name} (${profile.protocol.displayName})...")
         val intent = Intent(context, ParanoidVpnService::class.java).apply {
             action = ParanoidVpnService.ACTION_CONNECT
             putExtra(ParanoidVpnService.EXTRA_PROFILE_NAME, profile.name)
@@ -66,7 +69,7 @@ object VpnProtocolManager {
         } else {
             context.startService(intent)
         }
-        log("Handshake sent to ${profile.serverAddress}:${profile.serverPort}. MTU: ${profile.mtu}, DNS: ${profile.dnsServers.joinToString()}")
+        log("TUN intent dispatched for ${profile.serverAddress}:${profile.serverPort} (note: user-space WG/OVPN engine not bundled).")
     }
 
     fun stopVpnTunnel(context: Context) {
@@ -75,14 +78,58 @@ object VpnProtocolManager {
             action = ParanoidVpnService.ACTION_DISCONNECT
         }
         context.startService(intent)
-        log("Tunnel severed. System routing restored to default interface.")
+        log("Tunnel closed. System routing restored.")
     }
 
-    suspend fun pingEndpoint(profile: VpnProfile): Int = withContext(Dispatchers.IO) {
-        log("Ping diagnostic: Testing latency to ${profile.serverAddress}:${profile.serverPort}...")
-        kotlinx.coroutines.delay(350)
-        val measured = (20..90).random()
-        log("Latency response from ${profile.serverAddress}: ${measured}ms")
-        measured
+    /**
+     * Performs an honest TCP connect latency probe against serverAddress:serverPort.
+     * Never invents random ping values; returns VpnPingResult(reachable=false, rttMs=null) on failure.
+     */
+    suspend fun probeEndpoint(profile: VpnProfile, timeoutMs: Int = 2500): VpnPingResult = withContext(Dispatchers.IO) {
+        log("TCP probe -> ${profile.serverAddress}:${profile.serverPort}...")
+        val startNs = System.nanoTime()
+        val result = try {
+            Socket().use { sock ->
+                sock.connect(InetSocketAddress(profile.serverAddress, profile.serverPort), timeoutMs)
+            }
+            val measuredMs = ((System.nanoTime() - startNs) / 1_000_000L).toInt().coerceAtLeast(1)
+            VpnPingResult(
+                profileId = profile.id,
+                host = profile.serverAddress,
+                port = profile.serverPort,
+                reachable = true,
+                rttMs = measuredMs,
+                detail = "TCP handshake OK"
+            )
+        } catch (e: Exception) {
+            VpnPingResult(
+                profileId = profile.id,
+                host = profile.serverAddress,
+                port = profile.serverPort,
+                reachable = false,
+                rttMs = null,
+                detail = e.message ?: "Connection failed"
+            )
+        }
+
+        _lastPingResult.value = result
+        val updatedPing = result.rttMs ?: -1
+        _profiles.value = _profiles.value.map {
+            if (it.id == profile.id) it.copy(lastPingMs = updatedPing) else it
+        }
+        if (_selectedProfile.value?.id == profile.id) {
+            _selectedProfile.value = _selectedProfile.value?.copy(lastPingMs = updatedPing)
+        }
+
+        if (result.reachable) {
+            log("REACHABLE ${profile.serverAddress}:${profile.serverPort} (${result.rttMs}ms)")
+        } else {
+            log("UNREACHABLE ${profile.serverAddress}:${profile.serverPort} (${result.detail})")
+        }
+        result
+    }
+
+    suspend fun pingEndpoint(profile: VpnProfile, timeoutMs: Int = 2500): Int {
+        return probeEndpoint(profile, timeoutMs).rttMs ?: -1
     }
 }
