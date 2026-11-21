@@ -1,40 +1,48 @@
 # EVOLUTION PLAN
 ## ParanoidX Node / SimplexNode-2-GAIS
 
-**Актуальная версия:** 2.6  
+**Актуальная версия:** 2.7  
 **Владелец:** Гриша (Аудитор)  
 **Последнее обновление:** 2026-11-22
 
 ---
 
-## Закрытые этапы
+## Статус
 
-| Этап | Суть | Статус |
-|------|------|--------|
-| 0–10 | Каркас ноды (крипта → UI → radio/themes) | ✅ |
-| 11 | Hardening: secp dual-mode, Tor ControlPort, live SMP, onion v3 | ✅ |
+| Диапазон | Содержание | Статус |
+|----------|------------|--------|
+| 0–10 | Каркас ноды | ✅ |
+| 11 | Hardening (secp, Tor control, live SMP) | ✅ |
+| 12 | RC1 Closure (VPN honesty, VM split, smoke, notes) | ✅ |
+
+# RC1 FEATURE FREEZE
+
+**RC1 объявлен.**  
+Новые фичи в trunk не открываем. Только bugfix / security fix / документация.
+
+См. `RC1_NOTES.md`.
 
 ---
 
-## Этап 12 — RC1 Closure
+## Этап 13 — Post-RC1 Maintenance & GA Backlog
 **Статус:** 🟡 В РАБОТЕ (выдан 2026-11-22)
 
-Остаточный долг до честного RC1:
+### Режим работы
+- **Не** добавлять новые продуктовые поверхности (новые экраны «ради красоты», новые протоколы без необходимости).
+- Можно: чинить баги, усиливать безопасность, убирать оставшийся `[SIM]`, доводить MVP→READY.
 
-### Обязательный минимум
-1. **VPN Suite honesty** — убрать/`[SIM]` явно отделить симулированные `pingEndpoint`/traffic counters; либо реальные замеры, либо честный disabled/unavailable.
-2. **MainViewModel decomposition** — вынести хотя бы VPN + остатки Vault orchestration в профильные компоненты/VM (Chat/P2P уже начаты).
-3. **RC1 freeze checklist** — freeze markers, no new feature creep, smoke path: onboard → pin → chat send → radio state → wallet PROOF/SPEND switch → fleet probe.
+### Приоритетный backlog (на выбор, по одному крупному куску за итерацию)
+1. **VPN native path** — честный баннер остаётся, но если появляется real WG/OVPN/engine integration — только с тестами и без fake throughput.
+2. **Tor packaging** — native `libtor.so` multi-ABI в APK + путь без FallbackSimulation на поддерживаемых ABI.
+3. **Добить распил** — Vault/ZK-backup orchestration из legacy `MainViewModel`.
+4. **Fleet** — не mesh-gossip ради галочки; максимум: устойчивее probe history + clear UX lastProbe.
+5. **Security pass** — panic wipe edges, clipboard policy для seed/PIN, backup flags review.
 
-### Желательно
-4. Fleet: после manual probe сохранять last-probe result с timestamp (не притворяться persistent mesh).
-5. Документ `RC1_NOTES.md` коротко: что shippable, что нет.
+### Критерии приёмки итерации 13.x
+- Нет feature creep вне backlog
+- Обновлён RC1_NOTES / матрица только по факту
+- Тесты зелёные
+- Короткий отчёт: что починил / что осталось
 
-### Критерии приёмки
-- VPN больше не врёт цифрами без оговорки
-- Есть ощутимый распил MainViewModel **или** явный план+первый перенос в коде
-- Smoke path описан и не ломается
-- RC-матрица v3
-- Тесты/сборка зелёные
-
-После Этапа 12 — **RC1 tag**, дальше только bugfix / security fix, без фич.
+### GA (далеко)
+GA = RC1 + native Tor в релизной сборке + VPN real engines или явно «not in GA» + Vault VM split + operational docs. Не завтра.

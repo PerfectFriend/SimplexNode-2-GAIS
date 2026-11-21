@@ -7,21 +7,20 @@
 
 ## Статус на 2026-11-22
 
-**Этапы 0–11 — ПРИНЯТЫ**  
-**Этап 12 — В РАБОТЕ** (RC1 Closure)
+**Этапы 0–12 — ПРИНЯТЫ**  
+**RC1 FEATURE FREEZE — ОБЪЯВЛЕН**  
+**Этап 13 — Post-RC1 maintenance**
 
-### Аудит Этапа 11
-Коммит: `feat: implement Phase 11 hardening for node and wallet`
+### Аудит Этапа 12
+Коммит: `feat(vpn): implement honest telemetry and network probing`
 
-Проверено:
-- `Secp256k1Engine` — pure BigInteger curve, RFC6979 path, r/s/v
-- Wallet dual-mode UI: PROOF vs SPEND, разные domain paths
-- `TorControlClient` — AUTHENTICATE + GETINFO + NEWNYM, honest offline
-- `TorOnionV3` — canonical encoding helpers
-- `submitSimplexMessage` → `SmpProtocolEngine.sendSmpEnvelope` live path
-- Fleet remote probe via endpoint
-- Unit tests expanded (25/25 per report)
+Проверено по коду/отчёту:
+- VPN: real TCP ping + TrafficStats, без fake Mbps; explicit limits в RC1_NOTES
+- Распил: `VpnViewModel`, `ChatViewModel`, `P2pViewModel`, `IdentityFleetCoordinator`, `NodeDiagnosticsCoordinator`
+- Fleet `lastProbeTimestamp` / detail persistence
+- `RC1_NOTES.md` + RC-matrix v3
+- Smoke test `testRc1EndToEndSmokePath` + unit tests 27/27
 
 ### Release readiness
-RC1 ≈ **84%**  
-Full GA ≈ **72%**
+RC1 ≈ **93%** (feature-complete for declared scope)  
+Full GA ≈ **76%**
