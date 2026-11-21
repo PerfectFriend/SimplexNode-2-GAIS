@@ -1,66 +1,60 @@
 # EVOLUTION PLAN
 ## ParanoidX Node / SimplexNode-2-GAIS
 
-**Актуальная версия:** 2.4  
+**Актуальная версия:** 2.5  
 **Владелец:** Гриша (Аудитор)  
-**Последнее обновление:** 2026-11-18
+**Последнее обновление:** 2026-11-21
 
 ---
 
-## Продуктовая рамка
+## Статус плановых этапов 0–10
 
-1. Chat-home + drawer.
-2. In-app keyboard only.
-3. BIP-39 master seed → HKDF domains.
-4. Wallet MVP + Fleet registry с одного seed.
-5. Темы / радиоточка / RC — финальный слой.
+**Все плановые этапы эволюции 0–10 — ПРИНЯТЫ.**
 
----
+Проект переходит из «строительства каркаса» в **hardening → RC1**.
 
-## Этапы 0–9
-**Статус:** ✅ ПРИНЯТЫ
-
-| Этап | Суть |
-|------|------|
-| 0–5 | Честность, крипта, Tor, SMP, XFTP, P2P |
-| 6–7 | Telegram-shell + in-app keyboard |
-| 8 | Onboarding + RootKeyHub + Panic PIN |
-| 9 | Wallet MVP + Fleet Command Center |
-
-### Этап 9 — принято с оговорками
-- Domains: vault, tor, smp, p2p, xftp, wallet/evm, fleet/node/{i}
-- WalletScreen: адрес, copy, challenge sign/verify (in-app keyboard)
-- FleetScreen: node#0 live telemetry; remote = STANDBY (NO LINK)
-- Drawer: Wallet + Fleet; chat remains home
-
-**Честный технический долг (не блокер приёмки MVP):**
-- Подпись challenge сейчас = **HMAC-SHA512 domain proof** над EIP-191 digest, **не** secp256k1 ECDSA.
-- EVM-адрес = EIP-55 над материалом из HKDF+Keccak, **не** классический pubkey secp256k1.
-- Для «универсального кошелька» уровня mainnet это нужно будет заменить на настоящий secp256k1 (или явно держать как ParanoidX-identity proof, не как Ethereum spend key).
+| Этап | Суть | Статус |
+|------|------|--------|
+| 0–5 | Честность, крипта, Tor, SMP, XFTP, P2P | ✅ |
+| 6–7 | Telegram-shell + in-app keyboard only | ✅ |
+| 8 | BIP-39 onboarding + RootKeyHub + Panic | ✅ |
+| 9 | Wallet MVP + Fleet Command Center | ✅ MVP |
+| 10 | Themes + Radio health + RC matrix | ✅ |
 
 ---
 
-## Этап 10 — Полировка, темы, «радиоточка», RC
-**Статус:** 🟡 В РАБОТЕ (выдан 2026-11-18)
+## Этап 11 — Hardening toward RC1
+**Статус:** 🟡 В РАБОТЕ (выдан 2026-11-21)
 
-### Цели
-1. **Темы / скины / обои** — переключаемые визуальные профили (минимум 3), без ломки читаемости chat/vault.
-2. **Радиоточка как health-indicator:**
-   - «играет» / живой сигнал → нода видит сеть, ключевые сервисы в норме;
-   - «замолчало» / alarm → проблема (Tor down / no network / critical error).
-   - Это UX-сигнал стабильности, не развлекательный плеер ради плеера.
-3. **Полировка:**
-   - residual secret `OutlinedTextField` → in-app only где ещё осталось;
-   - мелочи навигации, пустые состояния Fleet/Wallet;
-   - маркеры `[REAL]` / `[NEEDS-WORK]` актуализировать (особенно wallet crypto model).
-4. **RC checklist** в отчёте: что prod-ready, что сознательно MVP.
+Порядок приоритетов (из RC-матрицы Этапа 10):
 
-### Критерии приёмки
-- ≥3 темы переключаются из UI
-- Радио/health индикатор честно завязан на реальные статусы (Tor/network), не на random
-- Нет регрессии онбординга, pin, keyboard, wallet, fleet
-- В отчёте явная матрица READY vs NEEDS-WORK
-- Сборка зелёная
+### P1
+1. **True secp256k1 path (опциональный spend-track)**  
+   Либо настоящий ECDSA (`r,s,v`) + честный Ethereum address from pubkey,  
+   либо явный dual-mode: `PROOF identity` (текущий HMAC) vs `SPEND key` (secp256k1).  
+   Не смешивать и не врать в UI.
 
-### Опционально (если останутся силы)
-- Заготовка под настоящий secp256k1 (библиотека + API), без обещания full mainnet wallet
+### P2
+2. **Tor ControlPort `GETINFO`** вместо sim-RTT там, где ещё остался `[SIM]`.
+3. **Живой chat relay** — `submitSimplexMessage` через реальный `SmpProtocolEngine` path, без декоративного sim-only хвоста.
+4. **Canonical Tor v3 onion encoding** (если заявляем onion service; иначе оставить `px_…` как app identity label и не называть wire-onion).
+
+### P3
+5. Remote fleet handshake поверх SMP/Tor (хотя бы прототип link state).
+6. Продолжить декомпозицию `MainViewModel`.
+
+### Критерии приёмки Этапа 11
+- UI/маркеры честно отражают PROOF vs SPEND (если secp добавлен)
+- Хотя бы один из P2 (ControlPort **или** live chat path) закрыт реально
+- Нет регрессии 0–10
+- Обновлённая RC-матрица READY / MVP / NEEDS-WORK
+- Сборка + тесты зелёные
+
+---
+
+## Оценка готовности к релизу (честная)
+
+**~74% к RC1 / public beta**  
+**~55–60% к full GA (mainnet-spend + multi-node mesh)**
+
+Подробности — в журнале аудита.

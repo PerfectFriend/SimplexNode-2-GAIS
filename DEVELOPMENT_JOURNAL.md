@@ -5,26 +5,24 @@
 
 ---
 
-## Статус на 2026-11-18
+## Статус на 2026-11-21
 
-**Этапы 0–9 — ПРИНЯТЫ**  
-**Этап 10 — В РАБОТЕ** (темы, радиоточка, RC)
+**Этапы 0–10 — ПРИНЯТЫ**  
+**Этап 11 — В РАБОТЕ** (Hardening → RC1)
 
-### Аудит Этапа 9
-Коммиты:
-- `feat(security): add key derivation for XFTP and EVM`
-- `feat: implement Stage 9 Universal Wallet and Fleet`
+### Аудит Этапа 10
+Коммит: `feat: implement Phase 10 features and rebranding`
 
 Проверено:
-- RootKeyHub domains: + `ParanoidX/XFTP/ChunkKey/v1`, `ParanoidX/Wallet/EVM/v1`
-- `Keccak256.kt` + EIP-55 helpers
-- `WalletScreen` / `FleetScreen` / `FleetNode`
-- Drawer entries; chat-home сохранён
-- Remote fleet nodes: STANDBY (NO LINK) — честно
-- Panic wipe включает fleet registry (по отчёту/коду)
-
-Оговорка (зафиксирована):
-- Wallet MVP использует HMAC domain-proof + HKDF-derived address material, не full secp256k1 spend key. Для MVP Этапа 9 допустимо; для «настоящего» EVM-кошелька — отдельный долг.
+- `NodeThemeProfile`: MATRIX / OBSIDIAN / AURORA + palettes + persistence
+- `RadioPointEvaluator`: детерминированные состояния ON_AIR / DEGRADED / SILENCE / ALARM от ConnectivityManager + Tor + VPN + P2P
+- `RadioPointIndicator`: Canvas waveform без Random, optional ToneGenerator
+- Drawer: переключатель тем + radio chip/dialog
+- RC-матрица в отчёте Жени — честная и совпадает с кодом
 
 ### Текущее задание
-**Этап 10** — см. `CORRESPONDENCE_JOURNAL.md`.
+**Этап 11** — см. `CORRESPONDENCE_JOURNAL.md`.
+
+### Release readiness (оценка аудитора)
+RC1 beta ≈ **74%**  
+Full GA ≈ **55–60%** (упирается в secp256k1 spend, live relay, remote fleet)
