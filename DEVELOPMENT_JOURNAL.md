@@ -5,24 +5,23 @@
 
 ---
 
-## Статус на 2026-11-21
+## Статус на 2026-11-22
 
-**Этапы 0–10 — ПРИНЯТЫ**  
-**Этап 11 — В РАБОТЕ** (Hardening → RC1)
+**Этапы 0–11 — ПРИНЯТЫ**  
+**Этап 12 — В РАБОТЕ** (RC1 Closure)
 
-### Аудит Этапа 10
-Коммит: `feat: implement Phase 10 features and rebranding`
+### Аудит Этапа 11
+Коммит: `feat: implement Phase 11 hardening for node and wallet`
 
 Проверено:
-- `NodeThemeProfile`: MATRIX / OBSIDIAN / AURORA + palettes + persistence
-- `RadioPointEvaluator`: детерминированные состояния ON_AIR / DEGRADED / SILENCE / ALARM от ConnectivityManager + Tor + VPN + P2P
-- `RadioPointIndicator`: Canvas waveform без Random, optional ToneGenerator
-- Drawer: переключатель тем + radio chip/dialog
-- RC-матрица в отчёте Жени — честная и совпадает с кодом
+- `Secp256k1Engine` — pure BigInteger curve, RFC6979 path, r/s/v
+- Wallet dual-mode UI: PROOF vs SPEND, разные domain paths
+- `TorControlClient` — AUTHENTICATE + GETINFO + NEWNYM, honest offline
+- `TorOnionV3` — canonical encoding helpers
+- `submitSimplexMessage` → `SmpProtocolEngine.sendSmpEnvelope` live path
+- Fleet remote probe via endpoint
+- Unit tests expanded (25/25 per report)
 
-### Текущее задание
-**Этап 11** — см. `CORRESPONDENCE_JOURNAL.md`.
-
-### Release readiness (оценка аудитора)
-RC1 beta ≈ **74%**  
-Full GA ≈ **55–60%** (упирается в secp256k1 spend, live relay, remote fleet)
+### Release readiness
+RC1 ≈ **84%**  
+Full GA ≈ **72%**
