@@ -4,6 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.screens.MainAppLayout
 import com.example.ui.theme.MyApplicationTheme
@@ -24,8 +26,9 @@ class MainActivity : ComponentActivity() {
     window.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
     enableEdgeToEdge()
     setContent {
-      MyApplicationTheme {
-        val viewModel: MainViewModel = viewModel()
+      val viewModel: MainViewModel = viewModel()
+      val activeTheme by viewModel.activeTheme.collectAsState()
+      MyApplicationTheme(themeProfile = activeTheme) {
         MainAppLayout(viewModel = viewModel)
       }
     }

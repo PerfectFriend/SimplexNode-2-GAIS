@@ -7,8 +7,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -25,7 +27,12 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ui.components.RadioPointDetailDialog
+import com.example.ui.components.RadioPointTopBarChip
+import com.example.ui.theme.LocalParanoidPalette
 import com.example.ui.theme.Localization
+import com.example.ui.theme.NodeThemeProfile
+import com.example.ui.theme.paletteFor
 import com.example.ui.viewmodel.MainViewModel
 import kotlinx.coroutines.launch
 
@@ -72,7 +79,13 @@ fun MainAppLayout(viewModel: MainViewModel) {
     val walletEvmAddress by viewModel.walletEvmAddress.collectAsState()
     val fleetNodes by viewModel.fleetNodes.collectAsState()
 
+    val activeTheme by viewModel.activeTheme.collectAsState()
+    val radioSnapshot by viewModel.radioSnapshot.collectAsState()
+    val radioAudioBeaconEnabled by viewModel.radioAudioBeaconEnabled.collectAsState()
+    val palette = LocalParanoidPalette.current
+
     var showLanguageMenu by remember { mutableStateOf(false) }
+    var showRadioDialog by remember { mutableStateOf(false) }
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
@@ -94,14 +107,14 @@ fun MainAppLayout(viewModel: MainViewModel) {
                 modifier = Modifier
                     .widthIn(max = 320.dp)
                     .fillMaxHeight(),
-                drawerContainerColor = Color(0xFF0F172A),
+                drawerContainerColor = palette.surface,
                 drawerTonalElevation = 6.dp
             ) {
                 // --- TELEGRAM-STYLE DRAWER HEADER ---
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFF0A0F1D))
+                        .background(palette.headerBg)
                         .statusBarsPadding()
                         .padding(20.dp)
                 ) {
@@ -115,43 +128,40 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             modifier = Modifier
                                 .size(56.dp)
                                 .clip(CircleShape)
-                                .background(Color(0xFF1E293B))
-                                .border(2.dp, Color(0xFF00FF66), CircleShape),
+                                .background(palette.surfaceElevated)
+                                .border(2.dp, palette.accent, CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Security,
                                 contentDescription = "Node Shield",
-                                tint = Color(0xFF00FF66),
+                                tint = palette.accent,
                                 modifier = Modifier.size(30.dp)
                             )
                         }
 
                         // Tor Status Pill
+                        val torPillColor = if (torStatus == "CONNECTED") palette.accent else palette.danger
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .clip(RoundedCornerShape(12.dp))
-                                .background(if (torStatus == "CONNECTED") Color(0x2200FF66) else Color(0x22FF1744))
-                                .border(
-                                    1.dp,
-                                    if (torStatus == "CONNECTED") Color(0xFF00FF66) else Color(0xFFFF1744),
-                                    RoundedCornerShape(12.dp)
-                                )
+                                .background(torPillColor.copy(alpha = 0.14f))
+                                .border(1.dp, torPillColor, RoundedCornerShape(12.dp))
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
                         ) {
                             Box(
                                 modifier = Modifier
                                     .size(6.dp)
                                     .clip(CircleShape)
-                                    .background(if (torStatus == "CONNECTED") Color(0xFF00FF66) else Color(0xFFFF1744))
+                                    .background(torPillColor)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "TOR $torStatus",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (torStatus == "CONNECTED") Color(0xFF00FF66) else Color(0xFFFF1744)
+                                color = torPillColor
                             )
                         }
                     }
@@ -159,26 +169,27 @@ fun MainAppLayout(viewModel: MainViewModel) {
                     Spacer(modifier = Modifier.height(14.dp))
 
                     Text(
-                        text = "ParanoidX Node",
+                        text = "PXNode",
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                        color = Color.White,
+                        color = palette.textPrimary,
                         fontSize = 18.sp
                     )
                     Text(
                         text = "$activeOnionAddress • E2EE Mesh",
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF94A3B8)
+                        color = palette.textSecondary
                     )
                 }
 
-                HorizontalDivider(color = Color(0xFF1E293B), thickness = 1.dp)
+                HorizontalDivider(color = palette.border, thickness = 1.dp)
 
                 // --- NAVIGATION ITEMS ---
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
+                        .verticalScroll(rememberScrollState())
                         .padding(vertical = 10.dp, horizontal = 12.dp)
                 ) {
                     // 1. CHATS (Primary / Telegram Core)
@@ -187,18 +198,18 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             Icon(
                                 imageVector = Icons.Default.ChatBubbleOutline,
                                 contentDescription = "Chats",
-                                tint = if (activeTab == "chat") Color(0xFF00FF66) else Color(0xFF94A3B8)
+                                tint = if (activeTab == "chat") palette.accent else palette.textSecondary
                             )
                         },
                         label = {
                             Text(
                                 text = Localization.get("nav_chat", currentLanguage),
                                 fontWeight = if (activeTab == "chat") FontWeight.Bold else FontWeight.Normal,
-                                color = if (activeTab == "chat") Color.White else Color(0xFFCBD5E1)
+                                color = if (activeTab == "chat") palette.textPrimary else palette.textSecondary
                             )
                         },
                         badge = {
-                            Badge(containerColor = Color(0xFF00FF66)) {
+                            Badge(containerColor = palette.accent) {
                                 Text("SimpleX", color = Color.Black, fontSize = 9.sp, fontWeight = FontWeight.Bold)
                             }
                         },
@@ -208,7 +219,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             coroutineScope.launch { drawerState.close() }
                         },
                         colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = Color(0xFF1E293B),
+                            selectedContainerColor = palette.surfaceElevated,
                             unselectedContainerColor = Color.Transparent
                         ),
                         modifier = Modifier
@@ -224,14 +235,14 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             Icon(
                                 imageVector = if (isUnlocked) Icons.Default.LockOpen else Icons.Default.Lock,
                                 contentDescription = "Vault",
-                                tint = if (isUnlocked) Color(0xFF00FF66) else Color(0xFFF59E0B)
+                                tint = if (isUnlocked) palette.accent else palette.warning
                             )
                         },
                         label = {
                             Text(
                                 text = Localization.get("nav_vault", currentLanguage),
                                 fontWeight = if (activeTab == "vault") FontWeight.Bold else FontWeight.Normal,
-                                color = if (activeTab == "vault") Color.White else Color(0xFFCBD5E1)
+                                color = if (activeTab == "vault") palette.textPrimary else palette.textSecondary
                             )
                         },
                         badge = {
@@ -239,7 +250,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 text = if (isUnlocked) "UNLOCKED" else "LOCKED",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (isUnlocked) Color(0xFF00FF66) else Color(0xFFF59E0B)
+                                color = if (isUnlocked) palette.accent else palette.warning
                             )
                         },
                         selected = activeTab == "vault",
@@ -248,7 +259,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             coroutineScope.launch { drawerState.close() }
                         },
                         colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = Color(0xFF1E293B),
+                            selectedContainerColor = palette.surfaceElevated,
                             unselectedContainerColor = Color.Transparent
                         ),
                         modifier = Modifier
@@ -264,14 +275,14 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             Icon(
                                 imageVector = Icons.Default.VpnLock,
                                 contentDescription = "Network",
-                                tint = if (activeTab == "network") Color(0xFF00B0FF) else Color(0xFF94A3B8)
+                                tint = if (activeTab == "network") palette.secondaryAccent else palette.textSecondary
                             )
                         },
                         label = {
                             Text(
                                 text = Localization.get("nav_net", currentLanguage),
                                 fontWeight = if (activeTab == "network") FontWeight.Bold else FontWeight.Normal,
-                                color = if (activeTab == "network") Color.White else Color(0xFFCBD5E1)
+                                color = if (activeTab == "network") palette.textPrimary else palette.textSecondary
                             )
                         },
                         badge = {
@@ -279,7 +290,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 text = "TOR/SOCKS5",
                                 fontSize = 9.sp,
                                 fontFamily = FontFamily.Monospace,
-                                color = Color(0xFF00B0FF)
+                                color = palette.secondaryAccent
                             )
                         },
                         selected = activeTab == "network",
@@ -288,7 +299,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             coroutineScope.launch { drawerState.close() }
                         },
                         colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = Color(0xFF1E293B),
+                            selectedContainerColor = palette.surfaceElevated,
                             unselectedContainerColor = Color.Transparent
                         ),
                         modifier = Modifier
@@ -304,14 +315,14 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             Icon(
                                 imageVector = Icons.Default.CloudSync,
                                 contentDescription = "Files & P2P Cloud",
-                                tint = if (seederStatus) Color(0xFF00FF66) else Color(0xFF94A3B8)
+                                tint = if (seederStatus) palette.accent else palette.textSecondary
                             )
                         },
                         label = {
                             Text(
                                 text = Localization.get("nav_files", currentLanguage),
                                 fontWeight = if (activeTab == "file") FontWeight.Bold else FontWeight.Normal,
-                                color = if (activeTab == "file") Color.White else Color(0xFFCBD5E1)
+                                color = if (activeTab == "file") palette.textPrimary else palette.textSecondary
                             )
                         },
                         badge = {
@@ -319,7 +330,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 text = if (seederStatus) "SWARM: $activePeers" else "IDLE",
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (seederStatus) Color(0xFF00FF66) else Color(0xFF64748B)
+                                color = if (seederStatus) palette.accent else palette.textMuted
                             )
                         },
                         selected = activeTab == "file",
@@ -328,7 +339,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             coroutineScope.launch { drawerState.close() }
                         },
                         colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = Color(0xFF1E293B),
+                            selectedContainerColor = palette.surfaceElevated,
                             unselectedContainerColor = Color.Transparent
                         ),
                         modifier = Modifier
@@ -344,14 +355,14 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             Icon(
                                 imageVector = Icons.Default.AccountBalanceWallet,
                                 contentDescription = "Universal Wallet",
-                                tint = if (activeTab == "wallet") Color(0xFF00FF66) else Color(0xFF94A3B8)
+                                tint = if (activeTab == "wallet") palette.accent else palette.textSecondary
                             )
                         },
                         label = {
                             Text(
                                 text = Localization.get("nav_wallet", currentLanguage),
                                 fontWeight = if (activeTab == "wallet") FontWeight.Bold else FontWeight.Normal,
-                                color = if (activeTab == "wallet") Color.White else Color(0xFFCBD5E1)
+                                color = if (activeTab == "wallet") palette.textPrimary else palette.textSecondary
                             )
                         },
                         badge = {
@@ -360,7 +371,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 fontSize = 9.sp,
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF00FF66)
+                                color = palette.accent
                             )
                         },
                         selected = activeTab == "wallet",
@@ -369,7 +380,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             coroutineScope.launch { drawerState.close() }
                         },
                         colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = Color(0xFF1E293B),
+                            selectedContainerColor = palette.surfaceElevated,
                             unselectedContainerColor = Color.Transparent
                         ),
                         modifier = Modifier.testTag("nav_drawer_wallet")
@@ -383,14 +394,14 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             Icon(
                                 imageVector = Icons.Default.Hub,
                                 contentDescription = "Fleet Command Center",
-                                tint = if (activeTab == "fleet") Color(0xFF00B0FF) else Color(0xFF94A3B8)
+                                tint = if (activeTab == "fleet") palette.secondaryAccent else palette.textSecondary
                             )
                         },
                         label = {
                             Text(
                                 text = Localization.get("nav_fleet", currentLanguage),
                                 fontWeight = if (activeTab == "fleet") FontWeight.Bold else FontWeight.Normal,
-                                color = if (activeTab == "fleet") Color.White else Color(0xFFCBD5E1)
+                                color = if (activeTab == "fleet") palette.textPrimary else palette.textSecondary
                             )
                         },
                         badge = {
@@ -399,7 +410,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 fontSize = 9.sp,
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF00B0FF)
+                                color = palette.secondaryAccent
                             )
                         },
                         selected = activeTab == "fleet",
@@ -408,7 +419,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             coroutineScope.launch { drawerState.close() }
                         },
                         colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = Color(0xFF1E293B),
+                            selectedContainerColor = palette.surfaceElevated,
                             unselectedContainerColor = Color.Transparent
                         ),
                         modifier = Modifier.testTag("nav_drawer_fleet")
@@ -422,14 +433,14 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             Icon(
                                 imageVector = Icons.Default.Terminal,
                                 contentDescription = "Terminal & Logs",
-                                tint = if (activeTab == "logs") Color(0xFF00FF66) else Color(0xFF94A3B8)
+                                tint = if (activeTab == "logs") palette.accent else palette.textSecondary
                             )
                         },
                         label = {
                             Text(
                                 text = Localization.get("nav_debug", currentLanguage),
                                 fontWeight = if (activeTab == "logs") FontWeight.Bold else FontWeight.Normal,
-                                color = if (activeTab == "logs") Color.White else Color(0xFFCBD5E1)
+                                color = if (activeTab == "logs") palette.textPrimary else palette.textSecondary
                             )
                         },
                         selected = activeTab == "logs",
@@ -438,7 +449,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             coroutineScope.launch { drawerState.close() }
                         },
                         colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = Color(0xFF1E293B),
+                            selectedContainerColor = palette.surfaceElevated,
                             unselectedContainerColor = Color.Transparent
                         ),
                         modifier = Modifier
@@ -447,20 +458,72 @@ fun MainAppLayout(viewModel: MainViewModel) {
                     )
                 }
 
-                HorizontalDivider(color = Color(0xFF1E293B), thickness = 1.dp)
+                HorizontalDivider(color = palette.border, thickness = 1.dp)
 
-                // --- DRAWER FOOTER (LANGUAGE, LOCK, INTRO) ---
+                // --- DRAWER FOOTER (THEME SKINS, RADIO HEALTH, LANGUAGE, LOCK, INTRO) ---
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(16.dp)
                 ) {
+                    // Stage 10: 3 Switchable Visual Themes (Matrix / Obsidian / Aurora)
+                    Text(
+                        text = "ТЕМА ИНТЕРФЕЙСА",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = palette.textMuted,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        NodeThemeProfile.entries.forEach { profile ->
+                            val isSelected = activeTheme == profile
+                            val themeColors = paletteFor(profile)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 38.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) themeColors.accent.copy(alpha = 0.18f) else palette.surfaceElevated)
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) themeColors.accent else palette.border,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { viewModel.setThemeProfile(profile) }
+                                    .padding(horizontal = 6.dp, vertical = 6.dp)
+                                    .testTag("theme_chip_${profile.id}")
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(themeColors.accent)
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = profile.displayName,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) themeColors.accent else palette.textSecondary
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
                     // Language Switcher Row
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF1E293B))
+                            .background(palette.surfaceElevated)
                             .clickable { showLanguageMenu = true }
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                             .testTag("language_selector"),
@@ -471,7 +534,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             Icon(
                                 imageVector = Icons.Default.Language,
                                 contentDescription = "Language",
-                                tint = Color(0xFF00FF66),
+                                tint = palette.accent,
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -479,13 +542,13 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 text = "Язык / Language: $currentLanguage",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                color = palette.textPrimary
                             )
                         }
                         Icon(
                             imageVector = Icons.Default.ArrowDropDown,
                             contentDescription = null,
-                            tint = Color(0xFF94A3B8)
+                            tint = palette.textSecondary
                         )
                     }
 
@@ -520,8 +583,8 @@ fun MainAppLayout(viewModel: MainViewModel) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("button_open_splash"),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00FF66)),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF00FF66).copy(alpha = 0.5f))
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.accent),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, palette.accent.copy(alpha = 0.5f))
                     ) {
                         Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
@@ -538,8 +601,8 @@ fun MainAppLayout(viewModel: MainViewModel) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("button_lock_node"),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444)),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.5f))
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.danger),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, palette.danger.copy(alpha = 0.5f))
                         ) {
                             Icon(imageVector = Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(8.dp))
@@ -550,8 +613,8 @@ fun MainAppLayout(viewModel: MainViewModel) {
                         OutlinedButton(
                             onClick = { viewModel.lockVault() },
                             modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFF59E0B)),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.5f))
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.warning),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, palette.warning.copy(alpha = 0.5f))
                         ) {
                             Icon(imageVector = Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(8.dp))
@@ -569,8 +632,8 @@ fun MainAppLayout(viewModel: MainViewModel) {
                 TopAppBar(
                     modifier = Modifier.statusBarsPadding(),
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color(0xFF0B111E),
-                        titleContentColor = Color.White
+                        containerColor = palette.headerBg,
+                        titleContentColor = palette.textPrimary
                     ),
                     navigationIcon = {
                         if (activeTab == "chat") {
@@ -582,7 +645,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 Icon(
                                     imageVector = Icons.Default.Menu,
                                     contentDescription = "Open Navigation Menu",
-                                    tint = Color.White
+                                    tint = palette.textPrimary
                                 )
                             }
                         } else {
@@ -594,7 +657,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                     contentDescription = "Back to Chat",
-                                    tint = Color.White
+                                    tint = palette.textPrimary
                                 )
                             }
                         }
@@ -616,7 +679,7 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 "vault" -> if (isUnlocked) "Сейф активен (SQLCipher)" else "Заблокировано"
                                 "network" -> "SOCKS5 127.0.0.1:9050"
                                 "file" -> "XFTP & P2P Swarm ($activePeers peers)"
-                                "wallet" -> "ParanoidX/Wallet/EVM/v1 • Non-Custodial"
+                                "wallet" -> "ParanoidX/Wallet/EVM/v1 • Proof MVP"
                                 "fleet" -> "Fleet Command • ${fleetNodes.size} Nodes"
                                 "logs" -> "Диагностика узла"
                                 else -> ""
@@ -625,43 +688,40 @@ fun MainAppLayout(viewModel: MainViewModel) {
                                 text = title,
                                 fontSize = 16.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                color = palette.textPrimary
                             )
                             if (subtitle.isNotEmpty()) {
                                 Text(
                                     text = subtitle,
                                     fontSize = 10.sp,
-                                    color = if (torStatus == "CONNECTED") Color(0xFF00FF66) else Color(0xFF94A3B8),
+                                    color = if (torStatus == "CONNECTED") palette.accent else palette.textSecondary,
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
                         }
                     },
                     actions = {
-                        // Quick status indicators
+                        // Stage 10: Radio-Point Honest Health Indicator + Drawer Toggle
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.padding(end = 8.dp)
                         ) {
-                            // Tor connection dot
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(if (torStatus == "CONNECTED") Color(0xFF00FF66) else Color(0xFFFF1744))
+                            RadioPointTopBarChip(
+                                snapshot = radioSnapshot,
+                                onClick = { showRadioDialog = true }
                             )
-                            Spacer(modifier = Modifier.width(10.dp))
 
                             // Drawer toggle button if not on chat screen
                             if (activeTab != "chat") {
+                                Spacer(modifier = Modifier.width(6.dp))
                                 IconButton(
                                     onClick = { coroutineScope.launch { drawerState.open() } },
-                                    modifier = Modifier.size(36.dp)
+                                    modifier = Modifier.size(40.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.Menu,
                                         contentDescription = "Menu",
-                                        tint = Color(0xFF94A3B8)
+                                        tint = palette.textSecondary
                                     )
                                 }
                             }
@@ -706,6 +766,16 @@ fun MainAppLayout(viewModel: MainViewModel) {
     ) {
         CyberpunkMatrixSplashScreen(
             onDismiss = { showSplashScreen = false }
+        )
+    }
+
+    if (showRadioDialog) {
+        RadioPointDetailDialog(
+            snapshot = radioSnapshot,
+            audioBeaconEnabled = radioAudioBeaconEnabled,
+            onToggleAudioBeacon = { viewModel.toggleRadioAudioBeacon(it) },
+            onTestBeaconPulse = { viewModel.probeRadioBeacon() },
+            onDismiss = { showRadioDialog = false }
         )
     }
 }

@@ -1,12 +1,21 @@
 package com.example.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
 import android.content.Intent
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
 import android.util.Log
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.db.AppDatabase
+import com.example.data.health.RadioPointEvaluator
+import com.example.data.health.RadioPointSnapshot
+import com.example.data.health.RadioSignalState
 import com.example.data.model.ActivityLog
 import com.example.data.model.FleetNodeEntry
 import com.example.data.model.SharedFile
@@ -24,6 +33,7 @@ import com.example.network.vpn.VpnProtocolManager
 import com.example.network.vpn.VpnProfile
 import com.example.network.vpn.VpnProtocolType
 import com.example.network.vpn.VpnConfigParser
+import com.example.ui.theme.NodeThemeProfile
 import com.example.network.p2p.P2pBlockStorage
 import com.example.network.p2p.P2pCloudEngine
 import com.example.service.ParanoidVpnService
@@ -111,13 +121,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val lastLruEvictionLog: StateFlow<String> = TorrentSeederService.lastEvictionLog.asStateFlow()
     val cacheSizeBytes: StateFlow<Long> = TorrentSeederService.calculatedCacheSizeBytes.asStateFlow()
 
-    // --- Localization State ---
+    // --- Localization & Visual Theme Profile (Stage 10) ---
     private val _currentLanguage = MutableStateFlow("RU")
     val currentLanguage: StateFlow<String> = _currentLanguage.asStateFlow()
+
+    private val _activeTheme = MutableStateFlow(NodeThemeProfile.MATRIX)
+    val activeTheme: StateFlow<NodeThemeProfile> = _activeTheme.asStateFlow()
+
+    private val _isNetworkAvailable = MutableStateFlow(false)
+    val isNetworkAvailable: StateFlow<Boolean> = _isNetworkAvailable.asStateFlow()
+
+    private val _isWifiConnected = MutableStateFlow(false)
+    val isWifiConnected: StateFlow<Boolean> = _isWifiConnected.asStateFlow()
+
+    private val _radioAudioBeaconEnabled = MutableStateFlow(false)
+    val radioAudioBeaconEnabled: StateFlow<Boolean> = _radioAudioBeaconEnabled.asStateFlow()
+
+    private var registeredNetworkCallback: ConnectivityManager.NetworkCallback? = null
 
     fun setLanguage(lang: String) {
         _currentLanguage.value = lang
         addSystemLog("CONFIG_CHANGE", "Interface language changed to $lang", "SUCCESS")
+    }
+
+    fun setThemeProfile(profile: NodeThemeProfile) {
+        _activeTheme.value = profile
+        getApplication<Application>()
+            .getSharedPreferences("paranoidx_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putString("theme_profile", profile.id)
+            .apply()
+        addSystemLog("THEME", "Visual skin switched to ${profile.displayName} (${profile.tagline})", "SUCCESS")
+    }
+
+    fun toggleRadioAudioBeacon(enabled: Boolean) {
+        _radioAudioBeaconEnabled.value = enabled
+        getApplication<Application>()
+            .getSharedPreferences("paranoidx_prefs", Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean("radio_audio_beacon", enabled)
+            .apply()
+        if (enabled) {
+            playRadioBeaconTone(radioSnapshot.value.state)
+        }
+    }
+
+    fun probeRadioBeacon() {
+        refreshConnectivitySnapshot()
+        playRadioBeaconTone(radioSnapshot.value.state)
     }
 
     // --- VPN & Connections Configuration State ---
@@ -295,6 +346,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (RootKeyHub.isNodeUnlocked()) {
             refreshWalletAndFleetFromHub()
         }
+
+        // Stage 10: Load persisted visual theme & radio audio setting, start real ConnectivityManager monitor
+        val uiPrefs = application.getSharedPreferences("paranoidx_prefs", Context.MODE_PRIVATE)
+        _activeTheme.value = NodeThemeProfile.fromId(uiPrefs.getString("theme_profile", NodeThemeProfile.MATRIX.id))
+        _radioAudioBeaconEnabled.value = uiPrefs.getBoolean("radio_audio_beacon", false)
+        registerConnectivityObserver(application)
 
         // Prepopulate preferences & basic default configs if needed
         viewModelScope.launch {
@@ -673,7 +730,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 addTorLog("SYSTEM_ERROR: Could not launch TorDaemonService: ${e.message}")
             }
 
-            // [REAL] Цикл обновления сетевой телеметрии при активном соединении
+            // [SIM] Обновление ориентировочной оценки RTT/стабильности Tor пока нет реального ControlPort GETINFO
             viewModelScope.launch {
                 while (_torEnabled.value) {
                     if (_torStatus.value == "CONNECTED") {
@@ -2082,6 +2139,110 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .edit()
             .putString("fleet_nodes_json", arr.toString())
             .apply()
+    }
+
+    // ==========================================
+    // --- RADIO POINT HEALTH ENGINE (STAGE 10) ---
+    // ==========================================
+    @Suppress("UNCHECKED_CAST")
+    val radioSnapshot: StateFlow<RadioPointSnapshot> = combine(
+        _isNetworkAvailable,
+        _isWifiConnected,
+        _torStatus,
+        isVpnConnected,
+        _torrentSeedingEnabled,
+        _activeTorrentPeersCount
+    ) { values ->
+        val netAvailable = values[0] as Boolean
+        val wifi = values[1] as Boolean
+        val tor = values[2] as String
+        val vpn = values[3] as Boolean
+        val seeder = values[4] as Boolean
+        val peers = values[5] as Int
+        RadioPointEvaluator.evaluate(
+            isNetworkAvailable = netAvailable,
+            isWifi = wifi,
+            torStatus = tor,
+            isVpnConnected = vpn,
+            seederActive = seeder,
+            activePeers = peers
+        )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = RadioPointEvaluator.evaluate(
+            isNetworkAvailable = false,
+            isWifi = false,
+            torStatus = _torStatus.value,
+            isVpnConnected = false,
+            seederActive = _torrentSeedingEnabled.value,
+            activePeers = 0
+        )
+    )
+
+    private fun refreshConnectivitySnapshot() {
+        try {
+            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val network = cm?.activeNetwork
+            val caps = if (network != null) cm.getNetworkCapabilities(network) else null
+            val hasNet = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+            val isWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+            _isNetworkAvailable.value = hasNet
+            _isWifiConnected.value = isWifi
+        } catch (_: Exception) {
+            _isNetworkAvailable.value = false
+            _isWifiConnected.value = false
+        }
+    }
+
+    private fun registerConnectivityObserver(app: Application) {
+        refreshConnectivitySnapshot()
+        try {
+            val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+            val callback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    refreshConnectivitySnapshot()
+                }
+                override fun onLost(network: Network) {
+                    refreshConnectivitySnapshot()
+                }
+                override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
+                    refreshConnectivitySnapshot()
+                }
+            }
+            registeredNetworkCallback = callback
+            cm.registerDefaultNetworkCallback(callback)
+        } catch (e: Exception) {
+            Log.w("MainViewModel", "Connectivity observer registration skipped: ${e.message}")
+        }
+    }
+
+    private fun playRadioBeaconTone(state: RadioSignalState) {
+        if (!_radioAudioBeaconEnabled.value || state == RadioSignalState.SILENCE_OFFLINE) return
+        try {
+            val toneType = when (state) {
+                RadioSignalState.ON_AIR_CLEAR -> ToneGenerator.TONE_PROP_BEEP
+                RadioSignalState.DEGRADED_CLEARNET_ONLY -> ToneGenerator.TONE_PROP_ACK
+                RadioSignalState.ALARM_ERROR -> ToneGenerator.TONE_SUP_ERROR
+                RadioSignalState.SILENCE_OFFLINE -> return
+            }
+            val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 40)
+            tg.startTone(toneType, 160)
+            viewModelScope.launch {
+                delay(250)
+                try { tg.release() } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {
+            // Audio device unavailable (e.g., headless emulator)
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        try {
+            val cm = getApplication<Application>().getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            registeredNetworkCallback?.let { cm?.unregisterNetworkCallback(it) }
+        } catch (_: Exception) {}
     }
 }
 

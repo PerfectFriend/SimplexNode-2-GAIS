@@ -11,7 +11,7 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.simplexprivacy.vxytqp"
+    applicationId = "com.aistudio.pxnode2.vxytqp"
     minSdk = 24
     targetSdk = 36
     versionCode = 1

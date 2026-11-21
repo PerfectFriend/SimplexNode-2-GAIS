@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -28,10 +29,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.network.vpn.VpnProfile
 import com.example.network.vpn.VpnProtocolType
 import com.example.network.smp.SmpProtocolEngine
 import com.example.network.xftp.XftpProtocolEngine
+import com.example.ui.components.InAppGboardKeyboard
 import com.example.ui.theme.Localization
 import com.example.ui.viewmodel.MainViewModel
 
@@ -389,6 +393,7 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                     AnimatedVisibility(visible = socks5ProxyEnabled) {
                                         Column {
                                             Spacer(modifier = Modifier.height(10.dp))
+                                            var activeSocksField by remember { mutableStateOf<String?>(null) }
                                             Row(
                                                 modifier = Modifier.fillMaxWidth(),
                                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -396,18 +401,43 @@ fun NetworkScreen(viewModel: MainViewModel) {
                                                 OutlinedTextField(
                                                     value = socks5ProxyHost,
                                                     onValueChange = { viewModel.setSocks5Host(it) },
+                                                    readOnly = true,
                                                     label = { Text("Proxy Host", fontSize = 10.sp) },
-                                                    modifier = Modifier.weight(2f),
+                                                    modifier = Modifier
+                                                        .weight(2f)
+                                                        .onFocusChanged { if (it.isFocused) activeSocksField = "host" }
+                                                        .clickable { activeSocksField = "host" },
                                                     singleLine = true,
                                                     textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)
                                                 )
                                                 OutlinedTextField(
                                                     value = socks5ProxyPort.toString(),
                                                     onValueChange = { viewModel.setSocks5Port(it.toIntOrNull() ?: 9050) },
+                                                    readOnly = true,
                                                     label = { Text("Port", fontSize = 10.sp) },
-                                                    modifier = Modifier.weight(1f),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .onFocusChanged { if (it.isFocused) activeSocksField = "port" }
+                                                        .clickable { activeSocksField = "port" },
                                                     singleLine = true,
                                                     textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp)
+                                                )
+                                            }
+                                            if (activeSocksField != null) {
+                                                Spacer(modifier = Modifier.height(6.dp))
+                                                val socksText = if (activeSocksField == "port") socks5ProxyPort.toString() else socks5ProxyHost
+                                                InAppGboardKeyboard(
+                                                    text = socksText,
+                                                    onTextChange = { updated ->
+                                                        if (activeSocksField == "port") {
+                                                            viewModel.setSocks5Port(updated.filter { it.isDigit() }.toIntOrNull() ?: 9050)
+                                                        } else {
+                                                            viewModel.setSocks5Host(updated)
+                                                        }
+                                                    },
+                                                    onSendOrDone = { activeSocksField = null },
+                                                    sendButtonLabel = "OK",
+                                                    onCloseKeyboard = { activeSocksField = null }
                                                 )
                                             }
 
@@ -964,17 +994,32 @@ fun NetworkScreen(viewModel: MainViewModel) {
         var profileName by remember { mutableStateOf("") }
         var selectedProtocol by remember { mutableStateOf(VpnProtocolType.WIREGUARD) }
         var rawConfigText by remember { mutableStateOf("") }
+        var activeVpnField by remember { mutableStateOf("name") }
 
-        AlertDialog(
+        Dialog(
             onDismissRequest = { showImportVpnDialog = false },
-            title = { Text("Import Custom VPN Profile", fontSize = 14.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Import Custom VPN Profile", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(10.dp))
+
                     OutlinedTextField(
                         value = profileName,
                         onValueChange = { profileName = it },
+                        readOnly = true,
                         label = { Text("Profile Name", fontSize = 11.sp) },
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeVpnField = "name" }
+                            .clickable { activeVpnField = "name" },
                         singleLine = true
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -997,30 +1042,57 @@ fun NetworkScreen(viewModel: MainViewModel) {
                     OutlinedTextField(
                         value = rawConfigText,
                         onValueChange = { rawConfigText = it },
+                        readOnly = true,
                         label = { Text("Config text (.conf, .ovpn, ss://)", fontSize = 10.sp) },
-                        modifier = Modifier.fillMaxWidth().height(120.dp),
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                val pasted = clipboardManager.getText()?.text ?: ""
+                                if (pasted.isNotBlank()) rawConfigText = pasted
+                            }) {
+                                Icon(Icons.Default.ContentPaste, contentDescription = "Paste VPN config")
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(100.dp)
+                            .onFocusChanged { if (it.isFocused) activeVpnField = "config" }
+                            .clickable { activeVpnField = "config" },
                         textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 10.sp)
                     )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (profileName.isNotBlank() && rawConfigText.isNotBlank()) {
-                            viewModel.importCustomVpnProfile(profileName.trim(), selectedProtocol, rawConfigText.trim())
-                            showImportVpnDialog = false
-                        }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showImportVpnDialog = false }) { Text("Cancel") }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (profileName.isNotBlank() && rawConfigText.isNotBlank()) {
+                                    viewModel.importCustomVpnProfile(profileName.trim(), selectedProtocol, rawConfigText.trim())
+                                    showImportVpnDialog = false
+                                }
+                            }
+                        ) { Text("Import") }
                     }
-                ) {
-                    Text("Import")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showImportVpnDialog = false }) {
-                    Text("Cancel")
+
+                    InAppGboardKeyboard(
+                        text = if (activeVpnField == "config") rawConfigText else profileName,
+                        onTextChange = { updated ->
+                            if (activeVpnField == "config") rawConfigText = updated else profileName = updated
+                        },
+                        onSendOrDone = {
+                            if (profileName.isNotBlank() && rawConfigText.isNotBlank()) {
+                                viewModel.importCustomVpnProfile(profileName.trim(), selectedProtocol, rawConfigText.trim())
+                                showImportVpnDialog = false
+                            }
+                        },
+                        sendButtonLabel = "IMPORT"
+                    )
                 }
             }
-        )
+        }
     }
 
     // ==========================================
@@ -1030,11 +1102,20 @@ fun NetworkScreen(viewModel: MainViewModel) {
         var serverHost by remember { mutableStateOf("smp.simplex.im") }
         var queueRole by remember { mutableStateOf("RECEIVE") }
 
-        AlertDialog(
+        Dialog(
             onDismissRequest = { showCreateQueueDialog = false },
-            title = { Text("Create Unidirectional SMP Queue", fontSize = 14.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Create Unidirectional SMP Queue", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text("Role:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1056,66 +1137,91 @@ fun NetworkScreen(viewModel: MainViewModel) {
                     OutlinedTextField(
                         value = serverHost,
                         onValueChange = { serverHost = it },
+                        readOnly = true,
                         label = { Text("Relay Server Host", fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.createSmpQueue(serverHost.trim(), queueRole)
-                        showCreateQueueDialog = false
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { showCreateQueueDialog = false }) { Text("Cancel") }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                viewModel.createSmpQueue(serverHost.trim(), queueRole)
+                                showCreateQueueDialog = false
+                            }
+                        ) { Text("Create") }
                     }
-                ) {
-                    Text("Create")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateQueueDialog = false }) {
-                    Text("Cancel")
+
+                    InAppGboardKeyboard(
+                        text = serverHost,
+                        onTextChange = { serverHost = it },
+                        onSendOrDone = {
+                            viewModel.createSmpQueue(serverHost.trim(), queueRole)
+                            showCreateQueueDialog = false
+                        },
+                        sendButtonLabel = "CREATE"
+                    )
                 }
             }
-        )
+        }
     }
 
     // ==========================================
     // DIALOG: SEND SMP ENVELOPE
     // ==========================================
     showSendSmpDialog?.let { queue ->
-        AlertDialog(
+        Dialog(
             onDismissRequest = { showSendSmpDialog = null },
-            title = { Text("Send SMP Envelope", fontSize = 14.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text("Send SMP Envelope", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
                     Text("Target Queue: ${queue.queueId.take(12)}...", fontSize = 10.sp, color = MaterialTheme.colorScheme.outline)
                     Spacer(modifier = Modifier.height(8.dp))
                     OutlinedTextField(
                         value = smpMessageInput,
                         onValueChange = { smpMessageInput = it },
+                        readOnly = true,
                         label = { Text("Message payload", fontSize = 11.sp) },
                         modifier = Modifier.fillMaxWidth()
                     )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (smpMessageInput.isNotBlank()) {
-                            viewModel.sendSmpEnvelope(queue, smpMessageInput.trim())
-                            showSendSmpDialog = null
-                        }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { showSendSmpDialog = null }) { Text("Cancel") }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (smpMessageInput.isNotBlank()) {
+                                    viewModel.sendSmpEnvelope(queue, smpMessageInput.trim())
+                                    showSendSmpDialog = null
+                                }
+                            }
+                        ) { Text("Send") }
                     }
-                ) {
-                    Text("Send")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSendSmpDialog = null }) {
-                    Text("Cancel")
+
+                    InAppGboardKeyboard(
+                        text = smpMessageInput,
+                        onTextChange = { smpMessageInput = it },
+                        onSendOrDone = {
+                            if (smpMessageInput.isNotBlank()) {
+                                viewModel.sendSmpEnvelope(queue, smpMessageInput.trim())
+                                showSendSmpDialog = null
+                            }
+                        },
+                        sendButtonLabel = "SEND"
+                    )
                 }
             }
-        )
+        }
     }
 }

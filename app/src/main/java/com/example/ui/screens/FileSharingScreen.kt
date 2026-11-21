@@ -16,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
@@ -24,6 +25,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.example.ui.components.InAppGboardKeyboard
 import com.example.ui.viewmodel.MainViewModel
 
 // Localized helper specifically tailored for File Sharing Screen
@@ -812,57 +816,118 @@ fun FileSharingScreen(viewModel: MainViewModel) {
     }
 
     if (showAddDialog) {
-        AlertDialog(
+        var activeFileField by remember { mutableStateOf("name") }
+        Dialog(
             onDismissRequest = { showAddDialog = false },
-            title = { Text(getFileText("seal_title", currentLanguage), fontSize = 16.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(getFileText("seal_title", currentLanguage), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+
                     OutlinedTextField(
                         value = fileName,
                         onValueChange = { fileName = it },
+                        readOnly = true,
                         label = { Text(getFileText("label_name", currentLanguage), fontSize = 11.sp) },
-                        modifier = Modifier.fillMaxWidth().testTag("input_file_name")
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeFileField = "name" }
+                            .clickable { activeFileField = "name" }
+                            .testTag("input_file_name")
                     )
                     OutlinedTextField(
                         value = filePayloadText,
                         onValueChange = { filePayloadText = it },
+                        readOnly = true,
                         label = { Text(getFileText("label_contents", currentLanguage), fontSize = 11.sp) },
-                        modifier = Modifier.fillMaxWidth().testTag("input_file_contents")
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeFileField = "payload" }
+                            .clickable { activeFileField = "payload" }
+                            .testTag("input_file_contents")
                     )
                     OutlinedTextField(
                         value = recipientAlias,
                         onValueChange = { recipientAlias = it },
+                        readOnly = true,
                         label = { Text(getFileText("label_recipient", currentLanguage), fontSize = 11.sp) },
-                        modifier = Modifier.fillMaxWidth().testTag("input_recipient_alias")
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onFocusChanged { if (it.isFocused) activeFileField = "recipient" }
+                            .clickable { activeFileField = "recipient" }
+                            .testTag("input_recipient_alias")
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        TextButton(onClick = { showAddDialog = false }) {
+                            Text(getFileText("btn_cancel", currentLanguage), fontSize = 11.sp)
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (fileName.isNotBlank() && filePayloadText.isNotBlank()) {
+                                    viewModel.encryptAndShareFile(
+                                        name = fileName,
+                                        rawContent = filePayloadText,
+                                        recipient = recipientAlias.ifBlank { "Unassigned" }
+                                    )
+                                    fileName = ""
+                                    filePayloadText = ""
+                                    recipientAlias = ""
+                                    showAddDialog = false
+                                }
+                            },
+                            modifier = Modifier.testTag("dialog_seal_confirm_button")
+                        ) {
+                            Text(getFileText("btn_seal", currentLanguage), fontSize = 11.sp)
+                        }
+                    }
+
+                    val activeText = when (activeFileField) {
+                        "payload" -> filePayloadText
+                        "recipient" -> recipientAlias
+                        else -> fileName
+                    }
+                    InAppGboardKeyboard(
+                        text = activeText,
+                        onTextChange = { updated ->
+                            when (activeFileField) {
+                                "payload" -> filePayloadText = updated
+                                "recipient" -> recipientAlias = updated
+                                else -> fileName = updated
+                            }
+                        },
+                        onSendOrDone = {
+                            if (fileName.isNotBlank() && filePayloadText.isNotBlank()) {
+                                viewModel.encryptAndShareFile(
+                                    name = fileName,
+                                    rawContent = filePayloadText,
+                                    recipient = recipientAlias.ifBlank { "Unassigned" }
+                                )
+                                fileName = ""
+                                filePayloadText = ""
+                                recipientAlias = ""
+                                showAddDialog = false
+                            }
+                        },
+                        sendButtonLabel = "SEAL"
                     )
                 }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (fileName.isNotBlank() && filePayloadText.isNotBlank()) {
-                            viewModel.encryptAndShareFile(
-                                name = fileName,
-                                rawContent = filePayloadText,
-                                recipient = recipientAlias.ifBlank { "Unassigned" }
-                            )
-                            fileName = ""
-                            filePayloadText = ""
-                            recipientAlias = ""
-                            showAddDialog = false
-                        }
-                    },
-                    modifier = Modifier.testTag("dialog_seal_confirm_button")
-                ) {
-                    Text(getFileText("btn_seal", currentLanguage), fontSize = 11.sp)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) {
-                    Text(getFileText("btn_cancel", currentLanguage), fontSize = 11.sp)
-                }
             }
-        )
+        }
     }
 }
 

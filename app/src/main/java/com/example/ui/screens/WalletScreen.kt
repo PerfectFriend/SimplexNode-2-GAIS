@@ -27,15 +27,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.components.InAppGboardKeyboard
+import com.example.ui.theme.LocalParanoidPalette
 import com.example.ui.viewmodel.MainViewModel
 
-// [REAL] Этап 9: Universal Wallet MVP — Детерминированный EVM-кошелёк из единого Master Seed.
+// [REAL] Этап 9/10: Universal Wallet MVP — Детерминированный identity/proof кошелёк из единого Master Seed.
 // [SECURITY-CRITICAL] Приватный ключ не хранится на сервере и не покидает оперативную память;
 // адрес и подпись детерминированно порождаются через HKDF-SHA512 ("ParanoidX/Wallet/EVM/v1") + Keccak-256.
+// [NEEDS-WORK] Классическая secp256k1 ECDSA подпись для mainnet-транзакций пока не подключена (используется HMAC-SHA512 Proof MVP).
 // [AIR-GAP] Ввод challenge-сообщений выполняется строго через встроенную клавиатуру InAppGboardKeyboard.
 
 @Composable
 fun WalletScreen(viewModel: MainViewModel) {
+    val palette = LocalParanoidPalette.current
     val evmAddress by viewModel.walletEvmAddress.collectAsState()
     val evmFingerprint by viewModel.walletEvmFingerprint.collectAsState()
     val lastSignature by viewModel.walletLastSignature.collectAsState()
@@ -71,11 +74,11 @@ fun WalletScreen(viewModel: MainViewModel) {
             // 1. UNIVERSAL EVM PASSPORT HERO CARD
             item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                    colors = CardDefaults.cardColors(containerColor = palette.surface),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, Color(0xFF00FF66).copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                        .border(1.dp, palette.accent.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
                 ) {
                     Column(modifier = Modifier.padding(18.dp)) {
                         Row(
@@ -88,42 +91,42 @@ fun WalletScreen(viewModel: MainViewModel) {
                                     modifier = Modifier
                                         .size(40.dp)
                                         .clip(CircleShape)
-                                        .background(Color(0x2200FF66))
-                                        .border(1.dp, Color(0xFF00FF66), CircleShape),
+                                        .background(palette.accent.copy(alpha = 0.14f))
+                                        .border(1.dp, palette.accent, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.AccountBalanceWallet,
                                         contentDescription = "Universal Wallet",
-                                        tint = Color(0xFF00FF66),
+                                        tint = palette.accent,
                                         modifier = Modifier.size(22.dp)
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(12.dp))
                                 Column {
                                     Text(
-                                        text = "UNIVERSAL EVM WALLET",
+                                        text = "UNIVERSAL WALLET (PROOF MVP)",
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 14.sp,
-                                        color = Color.White,
+                                        fontSize = 13.sp,
+                                        color = palette.textPrimary,
                                         fontFamily = FontFamily.Monospace
                                     )
                                     Text(
-                                        text = "Non-Custodial • Master Seed Derived",
+                                        text = "Non-Custodial • ParanoidX Proof Key",
                                         fontSize = 11.sp,
-                                        color = Color(0xFF00FF66)
+                                        color = palette.accent
                                     )
                                 }
                             }
 
                             Surface(
-                                color = Color(0xFF1E293B),
+                                color = palette.surfaceElevated,
                                 shape = RoundedCornerShape(8.dp)
                             ) {
                                 Text(
-                                    text = "EIP-55",
-                                    color = Color(0xFF00B0FF),
-                                    fontSize = 10.sp,
+                                    text = "HMAC+EIP55",
+                                    color = palette.secondaryAccent,
+                                    fontSize = 9.sp,
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = FontFamily.Monospace,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -137,7 +140,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                             text = "DETERMINISTIC PUBLIC ADDRESS",
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF94A3B8),
+                            color = palette.textSecondary,
                             fontFamily = FontFamily.Monospace
                         )
                         Spacer(modifier = Modifier.height(6.dp))
@@ -146,13 +149,17 @@ fun WalletScreen(viewModel: MainViewModel) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
-                                .background(Color(0xFF070B12))
-                                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(10.dp))
+                                .background(palette.headerBg)
+                                .border(
+                                    1.dp,
+                                    if (evmAddress.isNotBlank()) palette.border else palette.warning.copy(alpha = 0.55f),
+                                    RoundedCornerShape(10.dp)
+                                )
                                 .padding(12.dp)
                         ) {
                             Text(
-                                text = evmAddress.ifBlank { "Node locked — unlock with Master PIN" },
-                                color = if (evmAddress.isNotBlank()) Color(0xFF00FF66) else Color(0xFFF59E0B),
+                                text = evmAddress.ifBlank { "Node locked — unlock with Master PIN to derive EVM Proof address" },
+                                color = if (evmAddress.isNotBlank()) palette.accent else palette.warning,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace,
@@ -171,13 +178,13 @@ fun WalletScreen(viewModel: MainViewModel) {
                                 Text(
                                     text = "DOMAIN: ParanoidX/Wallet/EVM/v1",
                                     fontSize = 10.sp,
-                                    color = Color(0xFF94A3B8),
+                                    color = palette.textSecondary,
                                     fontFamily = FontFamily.Monospace
                                 )
                                 Text(
                                     text = "KEY FP: ${evmFingerprint.ifBlank { "----" }}",
                                     fontSize = 10.sp,
-                                    color = Color(0xFF64748B),
+                                    color = palette.textMuted,
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
@@ -191,7 +198,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                                     }
                                 },
                                 enabled = evmAddress.isNotBlank(),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66)),
+                                colors = ButtonDefaults.buttonColors(containerColor = palette.accent),
                                 modifier = Modifier
                                     .heightIn(min = 48.dp)
                                     .testTag("btn_copy_wallet_address")
@@ -211,6 +218,13 @@ fun WalletScreen(viewModel: MainViewModel) {
                                 )
                             }
                         }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "Модель ключей: HKDF-SHA512 + EIP-191 HMAC Domain Proof (для идентификации ноды и флота, не является spend-ключом secp256k1 mainnet).",
+                            fontSize = 10.sp,
+                            color = palette.textSecondary
+                        )
                     }
                 }
             }
@@ -218,11 +232,11 @@ fun WalletScreen(viewModel: MainViewModel) {
             // 2. CHALLENGE / MESSAGE SIGNING CARD (IN-APP KEYBOARD ONLY)
             item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                    colors = CardDefaults.cardColors(containerColor = palette.surface),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(16.dp))
+                        .border(1.dp, palette.border, RoundedCornerShape(16.dp))
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(
@@ -234,7 +248,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                                 Icon(
                                     imageVector = Icons.Default.VerifiedUser,
                                     contentDescription = "Sign Challenge",
-                                    tint = Color(0xFF00B0FF),
+                                    tint = palette.secondaryAccent,
                                     modifier = Modifier.size(20.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
@@ -242,14 +256,14 @@ fun WalletScreen(viewModel: MainViewModel) {
                                     text = "SIGN CHALLENGE / PROOF",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 13.sp,
-                                    color = Color.White,
+                                    color = palette.textPrimary,
                                     fontFamily = FontFamily.Monospace
                                 )
                             }
                             Text(
                                 text = "Air-Gap IME",
                                 fontSize = 10.sp,
-                                color = Color(0xFF00FF66),
+                                color = palette.accent,
                                 fontFamily = FontFamily.Monospace
                             )
                         }
@@ -258,7 +272,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                         Text(
                             text = "Подпись произвольного сообщения или challenge через EIP-191 Keccak-256 + HKDF-SHA512 без обращения к внешним серверам.",
                             fontSize = 11.sp,
-                            color = Color(0xFF94A3B8)
+                            color = palette.textSecondary
                         )
 
                         Spacer(modifier = Modifier.height(10.dp))
@@ -296,7 +310,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                                     Icon(
                                         imageVector = if (showInAppKeyboard) Icons.Default.KeyboardHide else Icons.Default.Keyboard,
                                         contentDescription = "Toggle In-App Keyboard",
-                                        tint = Color(0xFF00FF66)
+                                        tint = palette.accent
                                     )
                                 }
                             },
@@ -316,7 +330,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                                 copiedSignature = false
                             },
                             enabled = challengeInput.isNotBlank() && evmAddress.isNotBlank(),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00B0FF)),
+                            colors = ButtonDefaults.buttonColors(containerColor = palette.secondaryAccent),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = 48.dp)
@@ -330,7 +344,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Подписать Challenge (Offline)",
+                                text = if (evmAddress.isNotBlank()) "Подписать Challenge (Offline)" else "Кошелёк заблокирован (Нужен PIN)",
                                 color = Color.Black,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 13.sp
@@ -340,14 +354,14 @@ fun WalletScreen(viewModel: MainViewModel) {
                         // Signed Proof Output
                         lastSignature?.let { sig ->
                             Spacer(modifier = Modifier.height(14.dp))
-                            HorizontalDivider(color = Color(0xFF1E293B))
+                            HorizontalDivider(color = palette.border)
                             Spacer(modifier = Modifier.height(12.dp))
 
                             Text(
                                 text = "CRYPTOGRAPHIC PROOF OUTPUT",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF00FF66),
+                                color = palette.accent,
                                 fontFamily = FontFamily.Monospace
                             )
                             Spacer(modifier = Modifier.height(6.dp))
@@ -356,21 +370,21 @@ fun WalletScreen(viewModel: MainViewModel) {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
-                                    .background(Color(0xFF070B12))
-                                    .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(10.dp))
+                                    .background(palette.headerBg)
+                                    .border(1.dp, palette.border, RoundedCornerShape(10.dp))
                                     .padding(10.dp),
                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 Text(
                                     text = "ALG: ${sig.algorithm}",
                                     fontSize = 9.sp,
-                                    color = Color(0xFF94A3B8),
+                                    color = palette.textSecondary,
                                     fontFamily = FontFamily.Monospace
                                 )
                                 Text(
                                     text = "EIP-191 DIGEST: ${sig.digestHex}",
                                     fontSize = 10.sp,
-                                    color = Color(0xFFCBD5E1),
+                                    color = palette.textPrimary,
                                     fontFamily = FontFamily.Monospace,
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
@@ -378,7 +392,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                                 Text(
                                     text = "SIGNATURE: ${sig.signatureHex}",
                                     fontSize = 10.sp,
-                                    color = Color(0xFF00FF66),
+                                    color = palette.accent,
                                     fontFamily = FontFamily.Monospace,
                                     maxLines = 3,
                                     overflow = TextOverflow.Ellipsis,
@@ -401,7 +415,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                                         .weight(1f)
                                         .heightIn(min = 48.dp)
                                         .testTag("btn_copy_wallet_signature"),
-                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00FF66))
+                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.accent)
                                 ) {
                                     Icon(
                                         imageVector = if (copiedSignature) Icons.Default.Check else Icons.Default.ContentCopy,
@@ -414,7 +428,7 @@ fun WalletScreen(viewModel: MainViewModel) {
 
                                 Button(
                                     onClick = { viewModel.verifyLastWalletChallenge() },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
+                                    colors = ButtonDefaults.buttonColors(containerColor = palette.surfaceElevated),
                                     modifier = Modifier
                                         .weight(1f)
                                         .heightIn(min = 48.dp)
@@ -423,31 +437,28 @@ fun WalletScreen(viewModel: MainViewModel) {
                                     Icon(
                                         imageVector = Icons.Default.Verified,
                                         contentDescription = "Verify Signature",
-                                        tint = Color(0xFF00FF66),
+                                        tint = palette.accent,
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Проверить", color = Color.White, fontSize = 12.sp)
+                                    Text("Проверить", color = palette.textPrimary, fontSize = 12.sp)
                                 }
                             }
 
                             signatureVerified?.let { isValid ->
                                 Spacer(modifier = Modifier.height(8.dp))
+                                val badgeColor = if (isValid) palette.accent else palette.danger
                                 Surface(
-                                    color = if (isValid) Color(0x2200FF66) else Color(0x22EF4444),
+                                    color = badgeColor.copy(alpha = 0.14f),
                                     shape = RoundedCornerShape(8.dp),
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .border(
-                                            1.dp,
-                                            if (isValid) Color(0xFF00FF66) else Color(0xFFEF4444),
-                                            RoundedCornerShape(8.dp)
-                                        )
+                                        .border(1.dp, badgeColor, RoundedCornerShape(8.dp))
                                         .testTag("wallet_verification_badge")
                                 ) {
                                     Text(
                                         text = if (isValid) "SIGNATURE VALID • Seed Ownership Confirmed" else "SIGNATURE INVALID",
-                                        color = if (isValid) Color(0xFF00FF66) else Color(0xFFEF4444),
+                                        color = badgeColor,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
                                         fontFamily = FontFamily.Monospace,
@@ -463,11 +474,11 @@ fun WalletScreen(viewModel: MainViewModel) {
             // 3. LINKED ROOTKEYHUB DOMAINS CARD
             item {
                 Card(
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                    colors = CardDefaults.cardColors(containerColor = palette.surface),
                     shape = RoundedCornerShape(16.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(16.dp))
+                        .border(1.dp, palette.border, RoundedCornerShape(16.dp))
                 ) {
                     Column(
                         modifier = Modifier.padding(16.dp),
@@ -477,7 +488,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                             text = "ROOTKEYHUB • ACTIVE HKDF-SHA512 BRANCHES",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF94A3B8),
+                            color = palette.textSecondary,
                             fontFamily = FontFamily.Monospace
                         )
                         val domains = listOf(
@@ -494,7 +505,7 @@ fun WalletScreen(viewModel: MainViewModel) {
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFF0A0F1D))
+                                    .background(palette.headerBg)
                                     .padding(horizontal = 10.dp, vertical = 8.dp),
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
@@ -504,19 +515,19 @@ fun WalletScreen(viewModel: MainViewModel) {
                                         text = path,
                                         fontSize = 10.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF00B0FF),
+                                        color = palette.secondaryAccent,
                                         fontFamily = FontFamily.Monospace
                                     )
                                     Text(
                                         text = desc,
                                         fontSize = 10.sp,
-                                        color = Color(0xFF94A3B8)
+                                        color = palette.textSecondary
                                     )
                                 }
                                 Icon(
                                     imageVector = Icons.Default.Lock,
                                     contentDescription = null,
-                                    tint = Color(0xFF00FF66),
+                                    tint = palette.accent,
                                     modifier = Modifier.size(14.dp)
                                 )
                             }

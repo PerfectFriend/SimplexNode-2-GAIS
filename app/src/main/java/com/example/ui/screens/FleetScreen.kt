@@ -32,15 +32,17 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.FleetNodeEntry
 import com.example.data.model.FleetNodeStatus
 import com.example.ui.components.InAppGboardKeyboard
+import com.example.ui.theme.LocalParanoidPalette
 import com.example.ui.viewmodel.MainViewModel
 
-// [REAL] Этап 9: Fleet Command Center — Штаб управления локальным флотом нод ParanoidX.
+// [REAL] Этап 9/10: Fleet Command Center — Штаб управления локальным флотом нод ParanoidX.
 // [SECURITY-CRITICAL] Все узлы #0..N детерминированно выводятся из единого Master Seed (ParanoidX/Fleet/Node/{index}).
 // [HONEST-TELEMETRY] Удалённые ноды без реального сетевого канала честно маркируются как STANDBY (NO LINK).
 // [AIR-GAP] Ввод имени и транспорта новой ноды выполняется строго через встроенную клавиатуру InAppGboardKeyboard.
 
 @Composable
 fun FleetScreen(viewModel: MainViewModel) {
+    val palette = LocalParanoidPalette.current
     val fleetNodes by viewModel.fleetNodes.collectAsState()
     val torStatus by viewModel.torStatus.collectAsState()
     val seederStatus by viewModel.torrentSeedingEnabled.collectAsState()
@@ -69,11 +71,11 @@ fun FleetScreen(viewModel: MainViewModel) {
         // 1. FLEET COMMAND CENTER OVERVIEW
         item {
             Card(
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                colors = CardDefaults.cardColors(containerColor = palette.surface),
                 shape = RoundedCornerShape(16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .border(1.dp, Color(0xFF00B0FF).copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                    .border(1.dp, palette.secondaryAccent.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(
@@ -86,14 +88,14 @@ fun FleetScreen(viewModel: MainViewModel) {
                                 modifier = Modifier
                                     .size(40.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0x2200B0FF))
-                                    .border(1.dp, Color(0xFF00B0FF), CircleShape),
+                                    .background(palette.secondaryAccent.copy(alpha = 0.14f))
+                                    .border(1.dp, palette.secondaryAccent, CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Hub,
                                     contentDescription = "Fleet Command Center",
-                                    tint = Color(0xFF00B0FF),
+                                    tint = palette.secondaryAccent,
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
@@ -103,24 +105,24 @@ fun FleetScreen(viewModel: MainViewModel) {
                                     text = "FLEET COMMAND CENTER",
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 14.sp,
-                                    color = Color.White,
+                                    color = palette.textPrimary,
                                     fontFamily = FontFamily.Monospace
                                 )
                                 Text(
                                     text = "Зарегистрировано нод: ${fleetNodes.size} (Node #0..#${(fleetNodes.maxOfOrNull { it.nodeIndex } ?: 0)})",
                                     fontSize = 11.sp,
-                                    color = Color(0xFF94A3B8)
+                                    color = palette.textSecondary
                                 )
                             }
                         }
 
                         Surface(
-                            color = Color(0xFF1E293B),
+                            color = palette.surfaceElevated,
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text(
                                 text = "HKDF-SHA512",
-                                color = Color(0xFF00FF66),
+                                color = palette.accent,
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.Bold,
                                 fontFamily = FontFamily.Monospace,
@@ -136,7 +138,7 @@ fun FleetScreen(viewModel: MainViewModel) {
                         text = "ТЕЛЕМЕТРИЯ ЛОКАЛЬНОЙ НОДЫ #0",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = Color(0xFF94A3B8),
+                        color = palette.textSecondary,
                         fontFamily = FontFamily.Monospace
                     )
                     Spacer(modifier = Modifier.height(8.dp))
@@ -170,14 +172,14 @@ fun FleetScreen(viewModel: MainViewModel) {
                     Text(
                         text = "Примечание: px_…node.onion — детерминированный identity-label приложения. Удалённые слоты без активного линка честно отображаются в режиме STANDBY.",
                         fontSize = 10.sp,
-                        color = Color(0xFF64748B)
+                        color = palette.textMuted
                     )
 
                     Spacer(modifier = Modifier.height(14.dp))
 
                     Button(
                         onClick = { showAddDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66)),
+                        colors = ButtonDefaults.buttonColors(containerColor = palette.accent),
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(min = 48.dp)
@@ -195,6 +197,55 @@ fun FleetScreen(viewModel: MainViewModel) {
                             color = Color.Black,
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // Empty / Single-node guidance state
+        if (fleetNodes.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = palette.surface),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, palette.warning.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Lock, contentDescription = null, tint = palette.warning)
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "Реестр флота заблокирован. Разблокируйте ноду PIN-кодом для вывода Node #0..N.",
+                            fontSize = 12.sp,
+                            color = palette.textSecondary
+                        )
+                    }
+                }
+            }
+        } else if (fleetNodes.size == 1) {
+            item {
+                Surface(
+                    color = palette.surface,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .border(1.dp, palette.border, RoundedCornerShape(12.dp))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Info, contentDescription = null, tint = palette.secondaryAccent, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Активен только локальный узел #0. Добавьте логическую ноду #1+, чтобы сгенерировать заготовку под remote-узел из того же seed.",
+                            fontSize = 11.sp,
+                            color = palette.textSecondary
                         )
                     }
                 }
@@ -238,18 +289,19 @@ private fun TelemetryChip(
     isPositive: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val accent = if (isPositive) Color(0xFF00FF66) else Color(0xFFF59E0B)
+    val palette = LocalParanoidPalette.current
+    val accent = if (isPositive) palette.accent else palette.warning
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
-            .background(Color(0xFF070B12))
+            .background(palette.headerBg)
             .border(1.dp, accent.copy(alpha = 0.35f), RoundedCornerShape(10.dp))
             .padding(horizontal = 8.dp, vertical = 8.dp)
     ) {
         Text(
             text = label,
             fontSize = 9.sp,
-            color = Color(0xFF64748B),
+            color = palette.textMuted,
             fontFamily = FontFamily.Monospace,
             fontWeight = FontWeight.Bold
         )
@@ -274,15 +326,16 @@ private fun FleetNodeCard(
     onCopyFingerprint: () -> Unit,
     onRemove: () -> Unit
 ) {
+    val palette = LocalParanoidPalette.current
     val statusColor = when (status) {
-        FleetNodeStatus.ACTIVE_LOCAL -> Color(0xFF00FF66)
-        FleetNodeStatus.DEGRADED_LOCAL -> Color(0xFF00B0FF)
-        FleetNodeStatus.STANDBY_REMOTE -> Color(0xFFF59E0B)
-        FleetNodeStatus.UNCONFIGURED_REMOTE -> Color(0xFF64748B)
+        FleetNodeStatus.ACTIVE_LOCAL -> palette.accent
+        FleetNodeStatus.DEGRADED_LOCAL -> palette.secondaryAccent
+        FleetNodeStatus.STANDBY_REMOTE -> palette.warning
+        FleetNodeStatus.UNCONFIGURED_REMOTE -> palette.textMuted
     }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+        colors = CardDefaults.cardColors(containerColor = palette.surface),
         shape = RoundedCornerShape(14.dp),
         modifier = Modifier
             .fillMaxWidth()
@@ -321,14 +374,14 @@ private fun FleetNodeCard(
                             text = node.label,
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp,
-                            color = Color.White,
+                            color = palette.textPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             text = node.domainPath,
                             fontSize = 10.sp,
-                            color = Color(0xFF00B0FF),
+                            color = palette.secondaryAccent,
                             fontFamily = FontFamily.Monospace
                         )
                     }
@@ -356,32 +409,32 @@ private fun FleetNodeCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF070B12))
+                    .background(palette.headerBg)
                     .padding(10.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
                     text = "NODE ID: ${node.nodeId}",
                     fontSize = 10.sp,
-                    color = Color(0xFFCBD5E1),
+                    color = palette.textPrimary,
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
                     text = "FINGERPRINT: ${node.fingerprint}",
                     fontSize = 10.sp,
-                    color = Color(0xFF00FF66),
+                    color = palette.accent,
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
                     text = "IDENTITY LABEL: ${node.identityLabel}",
                     fontSize = 10.sp,
-                    color = Color(0xFF94A3B8),
+                    color = palette.textSecondary,
                     fontFamily = FontFamily.Monospace
                 )
                 Text(
                     text = "TRANSPORT HINT: ${node.transportHint}",
                     fontSize = 10.sp,
-                    color = Color(0xFF64748B),
+                    color = palette.textMuted,
                     fontFamily = FontFamily.Monospace
                 )
             }
@@ -398,7 +451,7 @@ private fun FleetNodeCard(
                         .weight(1f)
                         .heightIn(min = 48.dp)
                         .testTag("btn_copy_fleet_fp_${node.nodeIndex}"),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF00FF66))
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.accent)
                 ) {
                     Icon(
                         imageVector = if (isCopied) Icons.Default.Check else Icons.Default.ContentCopy,
@@ -415,7 +468,7 @@ private fun FleetNodeCard(
                         modifier = Modifier
                             .heightIn(min = 48.dp)
                             .testTag("btn_remove_fleet_node_${node.nodeIndex}"),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444))
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.danger)
                     ) {
                         Icon(
                             imageVector = Icons.Default.DeleteOutline,
@@ -435,6 +488,7 @@ private fun AddLogicalFleetNodeDialog(
     onDismiss: () -> Unit,
     onConfirm: (label: String, transportHint: String) -> Unit
 ) {
+    val palette = LocalParanoidPalette.current
     var label by remember { mutableStateOf("Relay Node #$nextIndex") }
     var transportHint by remember { mutableStateOf("Tor Hidden Relay") }
     var activeField by remember { mutableStateOf("label") } // "label" or "transport"
@@ -450,26 +504,26 @@ private fun AddLogicalFleetNodeDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
-            color = Color(0xFF0F172A),
+            color = palette.surface,
             shape = RoundedCornerShape(16.dp),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(12.dp)
-                .border(1.dp, Color(0xFF1E293B), RoundedCornerShape(16.dp))
+                .border(1.dp, palette.border, RoundedCornerShape(16.dp))
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     text = "НОВАЯ ЛОГИЧЕСКАЯ НОДА #$nextIndex",
                     fontWeight = FontWeight.Bold,
                     fontSize = 14.sp,
-                    color = Color(0xFF00FF66),
+                    color = palette.accent,
                     fontFamily = FontFamily.Monospace
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "Ключ и отпечаток будут детерминированно выведены по пути ParanoidX/Fleet/Node/$nextIndex.",
                     fontSize = 11.sp,
-                    color = Color(0xFF94A3B8)
+                    color = palette.textSecondary
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -529,12 +583,12 @@ private fun AddLogicalFleetNodeDialog(
                             .heightIn(min = 48.dp)
                             .testTag("btn_cancel_add_fleet_node")
                     ) {
-                        Text("Отмена", color = Color(0xFF94A3B8))
+                        Text("Отмена", color = palette.textSecondary)
                     }
                     Spacer(modifier = Modifier.width(8.dp))
                     Button(
                         onClick = { onConfirm(label, transportHint) },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00FF66)),
+                        colors = ButtonDefaults.buttonColors(containerColor = palette.accent),
                         modifier = Modifier
                             .heightIn(min = 48.dp)
                             .testTag("btn_confirm_add_fleet_node")

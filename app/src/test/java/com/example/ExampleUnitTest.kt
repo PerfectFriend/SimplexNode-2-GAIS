@@ -769,4 +769,100 @@ class ExampleUnitTest {
         assertTrue(node1.identityLabel.startsWith("px_") && node1.identityLabel.endsWith(".onion"))
         assertNotEquals(node0A.identityLabel, node1.identityLabel)
     }
+
+    @Test
+    fun testRadioPointHonestHealthEvaluation() {
+        // 1. Network OK + Tor CONNECTED -> ON_AIR_CLEAR
+        val onAir = com.example.data.health.RadioPointEvaluator.evaluate(
+            isNetworkAvailable = true,
+            isWifi = true,
+            torStatus = "CONNECTED",
+            isVpnConnected = false,
+            seederActive = true,
+            activePeers = 3,
+            nowMs = 1000L
+        )
+        assertEquals(com.example.data.health.RadioSignalState.ON_AIR_CLEAR, onAir.state)
+        assertTrue(onAir.state.isLiveSignal)
+        assertEquals("ON AIR", onAir.state.badgeLabel)
+
+        // 2. Network OK + Tor DISCONNECTED / BOOTSTRAPPING -> DEGRADED_CLEARNET_ONLY
+        val degraded = com.example.data.health.RadioPointEvaluator.evaluate(
+            isNetworkAvailable = true,
+            isWifi = false,
+            torStatus = "DISCONNECTED",
+            isVpnConnected = false,
+            seederActive = false,
+            activePeers = 0,
+            nowMs = 2000L
+        )
+        assertEquals(com.example.data.health.RadioSignalState.DEGRADED_CLEARNET_ONLY, degraded.state)
+        assertTrue(degraded.state.isLiveSignal)
+        assertEquals("DEGRADED", degraded.state.badgeLabel)
+
+        // 3. Offline -> SILENCE_OFFLINE
+        val silence = com.example.data.health.RadioPointEvaluator.evaluate(
+            isNetworkAvailable = false,
+            isWifi = false,
+            torStatus = "DISCONNECTED",
+            isVpnConnected = false,
+            seederActive = false,
+            activePeers = 0,
+            nowMs = 3000L
+        )
+        assertEquals(com.example.data.health.RadioSignalState.SILENCE_OFFLINE, silence.state)
+        assertFalse(silence.state.isLiveSignal)
+        assertEquals("SILENCE", silence.state.badgeLabel)
+
+        // 4. Critical Tor ERROR -> ALARM_ERROR (even if network is up)
+        val alarm = com.example.data.health.RadioPointEvaluator.evaluate(
+            isNetworkAvailable = true,
+            isWifi = true,
+            torStatus = "ERROR",
+            isVpnConnected = false,
+            seederActive = false,
+            activePeers = 0,
+            nowMs = 4000L
+        )
+        assertEquals(com.example.data.health.RadioPointEvaluator.evaluate(
+            isNetworkAvailable = false,
+            isWifi = false,
+            torStatus = "error",
+            isVpnConnected = false,
+            seederActive = false,
+            activePeers = 0,
+            nowMs = 4000L
+        ).state, alarm.state)
+        assertEquals(com.example.data.health.RadioSignalState.ALARM_ERROR, alarm.state)
+        assertFalse(alarm.state.isLiveSignal)
+    }
+
+    @Test
+    fun testThemeProfileSwitchAndPalettes() {
+        val profiles = com.example.ui.theme.NodeThemeProfile.entries
+        assertTrue("Stage 10 requires at least 3 theme profiles", profiles.size >= 3)
+
+        val matrix = com.example.ui.theme.paletteFor(com.example.ui.theme.NodeThemeProfile.MATRIX)
+        val obsidian = com.example.ui.theme.paletteFor(com.example.ui.theme.NodeThemeProfile.OBSIDIAN)
+        val aurora = com.example.ui.theme.paletteFor(com.example.ui.theme.NodeThemeProfile.AURORA)
+
+        assertNotEquals(matrix.accent, obsidian.accent)
+        assertNotEquals(obsidian.accent, aurora.accent)
+        assertNotEquals(matrix.accent, aurora.accent)
+
+        assertEquals(
+            com.example.ui.theme.NodeThemeProfile.OBSIDIAN,
+            com.example.ui.theme.NodeThemeProfile.fromId("obsidian")
+        )
+        assertEquals(
+            com.example.ui.theme.NodeThemeProfile.MATRIX,
+            com.example.ui.theme.NodeThemeProfile.fromId("unknown_theme")
+        )
+
+        val mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+        val seed = Bip39Utils.deriveSeed(mnemonic)
+        val sig = RootKeyHub.signWalletChallenge("Stage 10 RC", seed)
+        assertTrue(sig.algorithm.contains("HMAC Proof", ignoreCase = true))
+        assertTrue(sig.algorithm.contains("Non-secp256k1", ignoreCase = true))
+    }
 }

@@ -194,12 +194,14 @@ object RootKeyHub {
 
     fun getActiveMnemonic(): String? = activeMnemonicInMemory
 
+    // [REAL] Wallet Proof MVP: Детерминированная идентификация и подпись challenge через HKDF-SHA512 + EIP-191 Keccak-256.
+    // [NEEDS-WORK] Полноценный secp256k1 ECDSA spend-ключ для Ethereum mainnet не используется (сознательный MVP-долг).
     data class WalletChallengeSignature(
         val evmAddress: String,
         val challenge: String,
         val digestHex: String,
         val signatureHex: String,
-        val algorithm: String = "HKDF-SHA512 + EIP-191 Keccak-256 Domain Proof",
+        val algorithm: String = "HKDF-SHA512 + EIP-191 Keccak-256 HMAC Proof (Non-secp256k1 MVP)",
         val timestamp: Long = System.currentTimeMillis()
     )
 
@@ -311,7 +313,7 @@ object RootKeyHub {
     }
 
     /**
-     * Derives deterministic Universal EVM Wallet key:
+     * Derives deterministic Universal Wallet key branch:
      * Domain context: "ParanoidX/Wallet/EVM/v1"
      */
     fun deriveWalletEvmKey(customSeed: ByteArray? = null): ByteArray {
@@ -320,8 +322,9 @@ object RootKeyHub {
     }
 
     /**
-     * Derives deterministic EIP-55 checksummed EVM address (`0x...`) from `ParanoidX/Wallet/EVM/v1`.
+     * Derives deterministic EIP-55 checksummed EVM-style identity address (`0x...`) from `ParanoidX/Wallet/EVM/v1`.
      * Guaranteed identical across re-unlocks of the same BIP-39 Master Seed.
+     * Note: Derived from HKDF-SHA512 + Keccak-256 material (ParanoidX proof identity), not a secp256k1 ECDSA pubkey.
      */
     fun deriveWalletEvmAddress(customSeed: ByteArray? = null): String {
         val evmRoot = deriveWalletEvmKey(customSeed)
@@ -341,8 +344,9 @@ object RootKeyHub {
     }
 
     /**
-     * Signs an arbitrary message/challenge using EIP-191 Keccak-256 digest and deterministic
+     * [REAL] Signs an arbitrary message/challenge using EIP-191 Keccak-256 digest and deterministic
      * HMAC-SHA512 domain proof keyed by `ParanoidX/Wallet/EVM/v1`.
+     * [NEEDS-WORK] Classic secp256k1 ECDSA signing is not enabled in MVP.
      */
     fun signWalletChallenge(challenge: String, customSeed: ByteArray? = null): WalletChallengeSignature {
         val evmKey = deriveWalletEvmKey(customSeed)
