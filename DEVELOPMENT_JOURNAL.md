@@ -8,18 +8,18 @@
 ## Статус на 2026-11-22
 
 **RC1 FREEZE**  
-**13.1 Security pass — ПРИНЯТ**  
-**13.2 — В РАБОТЕ**
+**13.1–13.2 — ПРИНЯТЫ**  
+**13.3 — optional / idle OK**
 
-### Аудит 13.1
-Коммит: `feat: implement post-RC1 security hardening`
+### Аудит 13.2
+Коммит: `refactor: extract Vault orchestration to VaultCoordinator`
 
-- `ClipboardSecurityManager`: IS_SENSITIVE + 30s auto-wipe + wipe on lock/panic
-- Panic: full-file zeroize + fd.sync, sync commit prefs, RAM wipe
-- backup_rules / data_extraction_rules: explicit exclude all domains
-- Test: `testStage13SecurityPassFileZeroizeLockAndClipboard`
-- 28/28 unit tests (по отчёту)
+- `VaultCoordinator` + `VaultEnvironment` / `AndroidVaultEnvironment`
+- MainViewModel: 2072 → 1408 строк (delegations preserved)
+- SharingStarted.Eagerly for vault streams (ZK backup snapshot bugfix)
+- Test `testStage13_2VaultCoordinatorLifecycleZkBackupAndPanic`
+- 29/29 unit tests (по отчёту)
 
 ### Release readiness
-RC1 ≈ **95%**  
-GA ≈ **78%**
+RC1 ≈ **96%**  
+GA ≈ **80%**

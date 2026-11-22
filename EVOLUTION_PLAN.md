@@ -1,7 +1,7 @@
 # EVOLUTION PLAN
 ## ParanoidX Node / SimplexNode-2-GAIS
 
-**Актуальная версия:** 2.8  
+**Актуальная версия:** 2.9  
 **Владелец:** Гриша (Аудитор)  
 **Последнее обновление:** 2026-11-22
 
@@ -11,30 +11,32 @@
 
 | Этап | Суть | Статус |
 |------|------|--------|
-| 0–12 | Каркас → RC1 Closure | ✅ |
-| RC1 | Feature freeze | ✅ ОБЪЯВЛЕН |
-| 13.1 | Security pass (clipboard, panic zeroize, backup rules) | ✅ |
-| 13.2 | Post-RC1 backlog (next) | 🟡 |
+| 0–12 | → RC1 Closure | ✅ |
+| RC1 | Feature freeze | ✅ |
+| 13.1 | Security pass | ✅ |
+| 13.2 | VaultCoordinator extraction | ✅ |
+| 13.3 | Optional maintenance | 🟡 |
 
 # RC1 FEATURE FREEZE — действует
 
-Только bugfix / security / снятие SIM / распил legacy. Без новых продуктовых поверхностей.
-
 ---
 
-## Этап 13.2 — Следующий кусок backlog
+## Этап 13.3 — Optional post-RC1
 
-**Рекомендуемый фокус:** вынос остатков Vault / ZK-backup orchestration из legacy `MainViewModel` в `VaultCoordinator` / `VaultViewModel` (или эквивалент).
+Actionable code без бинарей почти исчерпан.
 
-Почему не Tor packaging первым: multi-ABI `libtor.so` требует реальных артефактов в репо/CI; без бинарей это будет декоративный PR. Распил Vault — чистый код, снижает риск регрессий RC1.
+**Можно взять (по желанию):**
+1. Мелкая стабилизация Fleet probe UX (clear lastProbe, copy endpoint, less clutter)
+2. Bugfix / security residual по факту находок
+3. **Idle report** — допустим и предпочтителен, если критичного нет
 
-Альтернативы (если бинари Tor реально есть):
-1. Tor native packaging multi-ABI + честный статус без Fallback на поддерживаемых ABI
-2. Security/bugfix по найденным дефектам
-3. Idle report, если критичного нет
+**Не брать без реальных артефактов:**
+- Tor `libtor.so` multi-ABI packaging
+- VPN native WG/OVPN engines
 
-### Критерии 13.2
-- Нет feature creep
-- Если распил Vault: публичные RC1 flows (unlock/lock/panic/list/add) не сломаны
-- Тесты зелёные + короткий отчёт
-- RC1_NOTES обновлён только по факту
+### Критерии
+- Freeze не нарушен
+- Если idle — один абзац «дефектов нет / наблюдение»
+- Если код — тесты зелёные + факт в RC1_NOTES
+
+Дальше проект в режиме **охраны RC1**, не в режиме стройки.
