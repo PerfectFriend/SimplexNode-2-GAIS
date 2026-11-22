@@ -1,7 +1,7 @@
 # PXNode — Release Candidate 1 (`RC1`) Engineering Notes
 **Application ID:** `com.aistudio.pxnode2.vxytqp`
 **Launcher Name:** `PXNode`
-**Stage:** Stage 13.1 (Post-RC1 Security Pass • Feature Freeze Maintained)
+**Stage:** Stage 13.2 (Post-RC1 Maintenance • Feature Freeze Maintained)
 
 ---
 
@@ -24,8 +24,9 @@
 - **Honest Telemetry & Air-Gap UX (`RadioPointEvaluator`, `NodeThemeProfile`, `InAppGboardKeyboard`)**
   - System IME is suppressed; sensitive inputs route through `InAppGboardKeyboard`.
   - Real `ConnectivityManager` + Tor + VPN + P2P state driving `SILENCE / DEGRADED / ON AIR / ALARM` Radio Point across 3 themes (`MATRIX`, `OBSIDIAN`, `AURORA`).
-- **Decomposed Coordinator Architecture (`VpnViewModel`, `ChatViewModel`, `P2pViewModel`, `IdentityFleetCoordinator`, `NodeDiagnosticsCoordinator`)**
+- **Decomposed Coordinator Architecture (`VpnViewModel`, `ChatViewModel`, `P2pViewModel`, `IdentityFleetCoordinator`, `NodeDiagnosticsCoordinator`, `VaultCoordinator`)**
   - VPN Suite extracted to `VpnViewModel`, Wallet/Fleet to `IdentityFleetCoordinator`, Node Control/Diagnostics to `NodeDiagnosticsCoordinator`.
+  - **Iteration 13.2 Vault Extraction (`VaultCoordinator`, `VaultEnvironment`):** Master password KDF setup/migration, Sovereign PIN/Panic wipe orchestration, Vault CRUD & decrypted state projection, File Vault ingestion pipeline, encrypted SharedFile helpers, and Zero-Knowledge backup/restore extracted cleanly out of `MainViewModel` (reducing `MainViewModel` from 2072 to 1408 lines); `rawVaultItems`/`sharedFiles` use `SharingStarted.Eagerly` so ZK backup never captures an unsubscribed empty snapshot.
 
 ---
 
@@ -37,14 +38,14 @@
    - `ParanoidVpnService` verifies `VpnService.prepare()` consent + non-null kernel `Builder.establish()` TUN descriptor and tracks **only OS `TrafficStats` UID byte deltas + uptime**. However, native WireGuard (`wireguard-go`) / OpenVPN C++ userspace forwarder libraries are **not bundled** — when TUN activates, UI explicitly marks `"TUN ACTIVE (Local Interface Only • No native WireGuard/OpenVPN packet daemon bundled)"`.
 3. **Fleet Mesh Synchronization**
    - `FleetScreen` performs manual on-demand TCP / Tor SOCKS5 probes (`Probe`) and displays `lastProbeTimestamp` (`HH:mm:ss (Manual)`). There is no persistent background peer discovery gossip daemon yet; unprobed remote nodes remain `REMOTE • STANDBY (NO LINK)`.
-4. **MainViewModel Remaining Legacy Surface**
-   - Vault CRUD, ZK backup archive payload assembly, and Tor/SOCKS5/SMP bindings remain in `MainViewModel` for stability during RC1 freeze. Future post-GA refactoring only.
+4. **MainViewModel Remaining Glue**
+   - Vault, PIN/Panic, and ZK-backup orchestration have moved to `VaultCoordinator` (Stage 13.2); remaining Tor/ControlPort, SOCKS5, SMP, and P2P coordinator bindings stay in `MainViewModel` (`1408` lines) under RC1 freeze.
 
 ---
 
 ## 3. RC1 Freeze Policy & Manual Smoke Checklist
 - **Policy:** Feature freeze effective upon RC1 acceptance. Post-RC1 commits are strictly **bugfix & security fix only**.
-- **RC1 & Post-RC1 Smoke / Security Checks (`ExampleUnitTest`: 28/28 PASS):**
+- **RC1 & Post-RC1 Smoke / Security Checks (`ExampleUnitTest`: 29/29 PASS):**
   - `testRc1EndToEndSmokePath`:
     1. Generate/validate BIP-39 mnemonic & derive domain keys via `RootKeyHub`.
     2. Unlock via Sovereign PIN (`PinLockScreen` + `InAppGboardKeyboard`).
@@ -53,3 +54,4 @@
     5. Switch Wallet mode `PROOF` (HMAC) <-> `SPEND` (`secp256k1` ECDSA) and sign/verify challenges.
     6. Probe VPN endpoint in Network → VPN Suite (`Ping` returns real TCP latency or `UNREACHABLE`) & probe Fleet remote slot (`lastProbeTimestamp` recorded).
   - `testStage13SecurityPassFileZeroizeLockAndClipboard`: Verifies multi-chunk (>128KB) full-file zeroization & deletion, `RootKeyHub.lockNode()` key-derivation guard, and `ClipboardSecurityManager` sensitive extra & 30s auto-wipe defaults.
+  - `testStage13_2VaultCoordinatorLifecycleZkBackupAndPanic`: Verifies `VaultCoordinator` master password setup, encrypted Vault add/mask/unlock, ZK-backup export/wrong-pass rejection/restore, and `PANIC_WIPED` purge of keys, clipboard, DB, and shared files.

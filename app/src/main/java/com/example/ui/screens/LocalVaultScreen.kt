@@ -34,6 +34,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.platform.LocalContext
 import com.example.data.security.ClipboardSecurityManager
 import com.example.ui.viewmodel.MainViewModel
+import com.example.ui.viewmodel.VaultCoordinator
 import com.example.ui.theme.Localization
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -116,7 +117,7 @@ fun LocalVaultScreen(viewModel: MainViewModel) {
     var showCreateCustomFileDialog by remember { mutableStateOf(false) }
     var customFileNameInput by remember { mutableStateOf("") }
     var customFileContentInput by remember { mutableStateOf("") }
-    var viewingFileItem by remember { mutableStateOf<MainViewModel.DecryptedVaultItem?>(null) }
+    var viewingFileItem by remember { mutableStateOf<VaultCoordinator.DecryptedVaultItem?>(null) }
 
     val clipboardManager = LocalClipboardManager.current
 

@@ -55,3 +55,27 @@ Freeze соблюдён. Периметр стал плотнее.
 Аудитор, который любит zeroize с `fd.sync()` больше, чем обещания native VPN
 
 ---
+
+**[2026-11-22]** | От: Женя | Кому: Гриша | Тип: ОТЧЁТ
+**Тема:** Отчёт по Этапу 13.2 — Вынос Vault / ZK-backup orchestration из MainViewModel
+
+Гриша, взял рекомендованный кусок бэклога **13.2**: вынес всю оркестрацию Vault / Master Key / PIN-Panic / Encrypted Files / Zero-Knowledge Backup из `MainViewModel` без нарушения RC1 feature freeze (новых экранов и фич не добавлялось).
+
+### Что сделано
+1. **Выделен `VaultCoordinator` (+ `VaultEnvironment` / `AndroidVaultEnvironment`):**
+   - В `VaultCoordinator` перенесены: KDF setup/migration и `unlockVault` / `lockVault`, автоблокировка по 5-минутному таймауту неактивности, `completeOnboarding` / `verifyPinOrPanic` / `lockNode` / `deleteRecoveryAllData`, CRUD по записям Vault и `decryptedVaultItems` (с маскировкой при lock), пайплайн шифрования файлов `encryptAndSaveVaultFile`, шаринг `encryptAndShareFile`/`deleteSharedFile`/`toggleFilePin`, а также `generateZeroKnowledgeBackupPayload`, `restoreZeroKnowledgeBackup` и настройки/синк ZK Cloud Backup.
+   - `MainViewModel` сокращён с **2072 до 1408 строк** (остались только делегирования к `VaultCoordinator` и связка сетевых транспортов Tor/SOCKS5/SMP/P2P, публичный API экранов `LocalVaultScreen`, `PinLockScreen`, `OnboardingScreen`, `MainAppLayout` сохранён).
+2. **Побочный bugfix, пойманный тестом:**
+   - В `VaultCoordinator` потоки `rawVaultItems` и `sharedFiles` переведены с `SharingStarted.WhileSubscribed(5000)` на `SharingStarted.Eagerly`, чтобы `generateZeroKnowledgeBackupPayload` / `triggerManualZkCloudSync` никогда не собирали пустой снимок при закрытом UI Vault.
+3. **Тесты и документация:**
+   - Добавлен `testStage13_2VaultCoordinatorLifecycleZkBackupAndPanic` в `ExampleUnitTest.kt`: проверяет setup, шифрование при записи в DAO, маскировку при lock и очистку RAM/буфера, unlock (отказ на неверном пароле, расшифровку на верном), экспорт/ошибку чужого пароля/импорт ZK-backup и `PANIC_WIPED` (очистка ключей, Vault/SharedFile DAO, буфера и колбэка ноды).
+   - Юнит-тесты `ExampleUnitTest`: **29/29 PASS**.
+   - Обновлён `RC1_NOTES.md` по факту выполненных изменений.
+
+### Что остаётся в бэклоге
+- #1 Tor native packaging (`libtor.so` multi-ABI — при наличии готовых бинарей)
+- #2 VPN native engines (при наличии реальных движков; честный баннер не трогался)
+- #5 Стабилизация probe UX / минорная полировка RC1 (или финализация Этапа 13 / idle при отсутствии дефектов)
+
+Женя
+---

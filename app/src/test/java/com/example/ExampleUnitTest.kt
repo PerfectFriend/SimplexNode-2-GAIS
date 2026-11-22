@@ -1175,4 +1175,268 @@ class ExampleUnitTest {
         assertEquals(30_000L, com.example.data.security.ClipboardSecurityManager.DEFAULT_AUTO_WIPE_MS)
         assertFalse(com.example.data.security.ClipboardSecurityManager.hasPendingAutoWipe())
     }
+
+    @Test
+    fun testStage13_2VaultCoordinatorLifecycleZkBackupAndPanic() = runBlocking {
+        class InMemoryVaultDao : com.example.data.db.VaultDao {
+            private var nextId = 1
+            val flow = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.data.model.VaultItem>>(emptyList())
+            override fun getAllVaultItems() = flow
+            override suspend fun insertVaultItem(item: com.example.data.model.VaultItem) {
+                val withId = if (item.id == 0) item.copy(id = nextId++) else item
+                flow.value = listOf(withId) + flow.value.filterNot { it.id == withId.id }
+            }
+            override suspend fun deleteVaultItem(id: Int) {
+                flow.value = flow.value.filterNot { it.id == id }
+            }
+            override suspend fun clearAllVault() {
+                flow.value = emptyList()
+            }
+        }
+
+        class InMemorySharedFileDao : com.example.data.db.SharedFileDao {
+            val flow = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.data.model.SharedFile>>(emptyList())
+            override fun getAllSharedFiles() = flow
+            override suspend fun insertSharedFile(file: com.example.data.model.SharedFile) {
+                flow.value = listOf(file) + flow.value
+            }
+            override suspend fun deleteSharedFile(id: Int) {
+                flow.value = flow.value.filterNot { it.id == id }
+            }
+            override suspend fun getUnpinnedFilesOrderByOldestAccess(): List<com.example.data.model.SharedFile> = emptyList()
+            override suspend fun updateLastAccessTime(id: Int, timestamp: Long) {}
+            override suspend fun updatePinStatus(id: Int, isPinned: Boolean) {}
+        }
+
+        class FakeVaultEnv : com.example.ui.viewmodel.VaultEnvironment {
+            var config = com.example.ui.viewmodel.VaultEnvironment.SecurityConfig()
+            var onboarded = true
+            var rootUnlocked = false
+            var dbMemoryCleared = 0
+            var clipboardWiped = 0
+            var panicWipeTriggered = 0
+
+            override fun readSecurityConfig() = config
+            override fun writeSecurityConfig(
+                saltB64: String,
+                iterations: Int,
+                algorithm: String,
+                passHash: String,
+                encryptedMnemonic: String?
+            ) {
+                config = config.copy(
+                    saltB64 = saltB64,
+                    iterations = iterations,
+                    algorithm = algorithm,
+                    passHash = passHash,
+                    encryptedMnemonic = encryptedMnemonic ?: config.encryptedMnemonic
+                )
+            }
+            override fun isRootOnboarded() = onboarded
+            override fun isRootUnlocked() = rootUnlocked
+            override fun setupRootMasterKeys(mnemonic: String, pin: String, panicPin: String): Boolean {
+                onboarded = true
+                rootUnlocked = true
+                return true
+            }
+            override fun verifyRootPin(enteredPin: String): RootKeyHub.PinResult {
+                return when (enteredPin) {
+                    "PANIC-9999" -> {
+                        onboarded = false
+                        rootUnlocked = false
+                        panicWipeTriggered++
+                        RootKeyHub.PinResult.PANIC_WIPED
+                    }
+                    "master-pass-132" -> {
+                        rootUnlocked = true
+                        RootKeyHub.PinResult.SUCCESS
+                    }
+                    else -> RootKeyHub.PinResult.INVALID
+                }
+            }
+            override fun lockRootNode() { rootUnlocked = false }
+            override fun triggerRootPanicWipe() { panicWipeTriggered++; onboarded = false; rootUnlocked = false }
+            override fun updateDbMasterPassphrase(passphrase: String) {}
+            override fun clearDbMemory() { dbMemoryCleared++ }
+            override fun wipeClipboardNow() { clipboardWiped++ }
+
+            override fun encodeBackupPayload(items: List<com.example.data.model.VaultItem>): String {
+                return items.joinToString("\n") {
+                    listOf(
+                        CryptoUtils.base64Encode(it.type.toByteArray()),
+                        CryptoUtils.base64Encode(it.title.toByteArray()),
+                        CryptoUtils.base64Encode((it.username ?: "").toByteArray()),
+                        CryptoUtils.base64Encode(it.sensitiveValue.toByteArray()),
+                        CryptoUtils.base64Encode((it.notes ?: "").toByteArray()),
+                        it.createdAt.toString()
+                    ).joinToString("|")
+                }
+            }
+
+            override fun encodeBackupEnvelope(
+                saltB64: String,
+                iterations: Int,
+                algorithm: String,
+                encryptedPayload: String
+            ): String = "$saltB64#$iterations#$encryptedPayload"
+
+            override fun parseBackupEnvelope(raw: String, defaultIterations: Int): com.example.ui.viewmodel.VaultEnvironment.BackupEnvelope {
+                val parts = raw.split("#", limit = 3)
+                return if (parts.size == 3) {
+                    com.example.ui.viewmodel.VaultEnvironment.BackupEnvelope(parts[0], parts[1].toInt(), parts[2])
+                } else {
+                    com.example.ui.viewmodel.VaultEnvironment.BackupEnvelope(null, defaultIterations, raw)
+                }
+            }
+
+            override fun parseBackupItems(decryptedJson: String): List<com.example.data.model.VaultItem> {
+                if (decryptedJson.isBlank()) return emptyList()
+                return decryptedJson.lines().filter { it.isNotBlank() }.map { line ->
+                    val cols = line.split("|")
+                    com.example.data.model.VaultItem(
+                        type = String(CryptoUtils.base64Decode(cols[0])),
+                        title = String(CryptoUtils.base64Decode(cols[1])),
+                        username = String(CryptoUtils.base64Decode(cols[2])),
+                        sensitiveValue = String(CryptoUtils.base64Decode(cols[3])),
+                        notes = String(CryptoUtils.base64Decode(cols[4])),
+                        createdAt = cols[5].toLong()
+                    )
+                }
+            }
+        }
+
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        val env = FakeVaultEnv()
+        val vaultDao = InMemoryVaultDao()
+        val fileDao = InMemorySharedFileDao()
+        var onion = "px_initial.onion"
+        var fullCleanupCount = 0
+
+        val coordinator = com.example.ui.viewmodel.VaultCoordinator(
+            env = env,
+            scope = scope,
+            vaultDao = vaultDao,
+            sharedFileDao = fileDao,
+            onSystemLog = { _, _, _ -> },
+            onCloudSyncLog = {},
+            onOnionAddressUpdated = { onion = it },
+            getOnionAddress = { onion },
+            onRefreshIdentityAndFleet = { Pair("px_test.onion", "canon.onion") },
+            onClearIdentityOnLock = {},
+            onFullPanicCleanup = { fullCleanupCount++ },
+            startInactivityMonitor = false
+        )
+
+        // 1. Master password setup & item creation (encrypted at rest)
+        coordinator.setupMasterPasswordBlocking("master-pass-132")
+        assertTrue(coordinator.isPasswordSetup.value)
+        assertTrue(coordinator.isUnlocked.value)
+        assertTrue(coordinator.hasUnlockedMasterKey())
+        assertTrue(onion.endsWith(".onion"))
+
+        coordinator.saveVaultItem("KEY", "Signal Root", "operator", "secret-val-132", "cold")
+        val deadline = System.currentTimeMillis() + 3000L
+        while ((vaultDao.flow.value.isEmpty() || coordinator.rawVaultItems.value.isEmpty()) &&
+            System.currentTimeMillis() < deadline
+        ) {
+            kotlinx.coroutines.delay(20)
+        }
+        assertEquals(1, vaultDao.flow.value.size)
+        assertEquals(1, coordinator.rawVaultItems.value.size)
+        assertNotEquals("Signal Root", vaultDao.flow.value[0].title)
+        val liveDecrypted = com.example.ui.viewmodel.VaultCoordinator.decryptVaultItems(
+            vaultDao.flow.value,
+            unlocked = true,
+            key = null
+        )
+        assertEquals("🔒 Encrypted Archive", liveDecrypted[0].title)
+
+        // 2. Lock masks vault items & wipes clipboard/DB key from RAM
+        coordinator.lockVault()
+        assertFalse(coordinator.isUnlocked.value)
+        assertFalse(coordinator.hasUnlockedMasterKey())
+        assertTrue(env.clipboardWiped >= 1)
+        assertTrue(env.dbMemoryCleared >= 1)
+
+        // 3. Unlock rejects wrong password and succeeds on valid password
+        assertFalse(coordinator.unlockVault("wrong-pass"))
+        assertTrue(coordinator.unlockVault("master-pass-132"))
+        assertTrue(coordinator.hasUnlockedMasterKey())
+        val unlockedView = run {
+            var res = emptyList<com.example.ui.viewmodel.VaultCoordinator.DecryptedVaultItem>()
+            val d = System.currentTimeMillis() + 2000L
+            while (System.currentTimeMillis() < d) {
+                val cur = com.example.ui.viewmodel.VaultCoordinator.decryptVaultItems(
+                    vaultDao.flow.value,
+                    coordinator.isUnlocked.value,
+                    CryptoUtils.deriveKey("master-pass-132", CryptoUtils.base64Decode(env.config.saltB64!!), env.config.iterations)
+                )
+                if (cur.isNotEmpty() && cur[0].title == "Signal Root") {
+                    res = cur
+                    break
+                }
+                kotlinx.coroutines.delay(20)
+            }
+            res
+        }
+        assertEquals("Signal Root", unlockedView.firstOrNull()?.title)
+        assertEquals("secret-val-132", unlockedView.firstOrNull()?.decryptedValue)
+
+        // 4. Generate & restore ZK-backup into empty VaultDao
+        val zkEnvelope = coordinator.generateZeroKnowledgeBackupPayload("zk-pass-456")
+        assertNotNull(zkEnvelope)
+        assertFalse(coordinator.restoreZeroKnowledgeBackup(zkEnvelope!!, "wrong-zk-pass"))
+
+        val restoreVaultDao = InMemoryVaultDao()
+        val restoreEnv = FakeVaultEnv()
+        val restoreCoord = com.example.ui.viewmodel.VaultCoordinator(
+            env = restoreEnv,
+            scope = scope,
+            vaultDao = restoreVaultDao,
+            sharedFileDao = InMemorySharedFileDao(),
+            onSystemLog = { _, _, _ -> },
+            onCloudSyncLog = {},
+            onOnionAddressUpdated = {},
+            getOnionAddress = { "px_restore.onion" },
+            onRefreshIdentityAndFleet = { null },
+            onClearIdentityOnLock = {},
+            onFullPanicCleanup = {},
+            startInactivityMonitor = false
+        )
+        assertTrue(restoreCoord.restoreZeroKnowledgeBackup(zkEnvelope, "zk-pass-456"))
+        val restoreDeadline = System.currentTimeMillis() + 3000L
+        while (restoreVaultDao.flow.value.isEmpty() && System.currentTimeMillis() < restoreDeadline) {
+            kotlinx.coroutines.delay(20)
+        }
+        assertEquals(1, restoreVaultDao.flow.value.size)
+
+        // 5. Panic PIN wipes keys, DB, shared files, clipboard, and triggers full cleanup
+        fileDao.insertSharedFile(
+            com.example.data.model.SharedFile(
+                id = 7,
+                fileName = "top_secret.txt",
+                sizeLabel = "12 B",
+                encryptedPayload = "cipher",
+                senderAlias = "me",
+                recipientAlias = "peer",
+                accessUrl = "http://onion/7"
+            )
+        )
+        val pinRes = coordinator.verifyPinOrPanic("PANIC-9999")
+        assertEquals(RootKeyHub.PinResult.PANIC_WIPED, pinRes)
+        assertFalse(coordinator.isUnlocked.value)
+        assertTrue(coordinator.isPinLocked.value)
+        assertFalse(coordinator.isOnboarded.value)
+        assertFalse(coordinator.hasUnlockedMasterKey())
+
+        val panicDeadline = System.currentTimeMillis() + 3000L
+        while ((vaultDao.flow.value.isNotEmpty() || fileDao.flow.value.isNotEmpty() || fullCleanupCount == 0) &&
+            System.currentTimeMillis() < panicDeadline
+        ) {
+            kotlinx.coroutines.delay(20)
+        }
+        assertTrue("Vault DAO must be empty after PANIC_WIPED", vaultDao.flow.value.isEmpty())
+        assertTrue("SharedFile DAO must be empty after PANIC_WIPED", fileDao.flow.value.isEmpty())
+        assertEquals(1, fullCleanupCount)
+    }
 }

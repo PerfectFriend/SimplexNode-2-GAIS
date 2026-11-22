@@ -9,7 +9,6 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.util.Log
-import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.db.AppDatabase
@@ -21,11 +20,8 @@ import com.example.data.model.FleetNodeEntry
 import com.example.data.model.SharedFile
 import com.example.data.model.SimplexServer
 import com.example.data.model.VaultItem
-import com.example.data.security.ClipboardSecurityManager
 import com.example.data.security.CryptoUtils
-import com.example.data.security.DbEncryptionManager
 import com.example.data.security.RootKeyHub
-import com.example.data.security.Bip39Utils
 import com.example.data.security.Socks5ProxyClient
 import com.example.network.TorNetworkManager
 import com.example.network.smp.SmpProtocolEngine
@@ -48,14 +44,12 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
-import javax.crypto.SecretKey
 
-// [REAL] Этап 12 (Декомпозиция God-object для RC1):
-// Вынесены VpnViewModel (VPN Suite), IdentityFleetCoordinator (Wallet PROOF/SPEND + Fleet Registry) и NodeDiagnosticsCoordinator.
-// [SECURITY-CRITICAL] Координатор локального криптоконтура, SQLCipher Vault и SimpleX E2EE транспорта.
+// [REAL] Этап 12–13.2 (Декомпозиция God-object):
+// Вынесены VpnViewModel (VPN Suite), IdentityFleetCoordinator (Wallet PROOF/SPEND + Fleet Registry),
+// NodeDiagnosticsCoordinator и VaultCoordinator (Vault CRUD, Master-ключ, PIN/Panic, File Vault и ZK-Backup).
+// [SECURITY-CRITICAL] Координатор локального криптоконтура и SimpleX/Tor/P2P транспорта.
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // [REAL] + [PROD-READY] Локальная база данных Room, полностью зашифрованная на диске через SQLCipher (Этап 1).
@@ -66,35 +60,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val sharedFileDao = db.sharedFileDao()
     private val logDao = db.activityLogDao()
 
-    // --- Master Encryption Password State ---
-    // [REAL] Управление состоянием блокировки интерфейса и автоблокировки по неактивности
-    private val _isUnlocked = MutableStateFlow(false)
-    val isUnlocked: StateFlow<Boolean> = _isUnlocked.asStateFlow()
-
-    private val _isPasswordSetup = MutableStateFlow(false) // Whether user has established master credentials
-    val isPasswordSetup: StateFlow<Boolean> = _isPasswordSetup.asStateFlow()
-
-    // --- Inactivity Tracking ---
-    // [REAL] Таймер неактивности пользователя
-    private val _lastActivityTime = MutableStateFlow(System.currentTimeMillis())
-    val lastActivityTime: StateFlow<Long> = _lastActivityTime.asStateFlow()
-
-    // [SECURITY-CRITICAL] Секретный ключ AES в памяти JVM
-    private var masterSecretKey: SecretKey? = null
-    private var cachedPassphraseHash: String = ""
-
-    // --- BIP-39 Mnemonic Seed State ---
-    // [REAL] Хранение и распространение мнемоники через Bip39Utils
-    private val _bip39Mnemonic = MutableStateFlow("")
-    val bip39Mnemonic: StateFlow<String> = _bip39Mnemonic.asStateFlow()
-
-    // --- Sovereign Onboarding & Root Key State (Stage 8 + Extracted Coordinators) ---
-    private val _isOnboarded = MutableStateFlow(false)
-    val isOnboarded: StateFlow<Boolean> = _isOnboarded.asStateFlow()
-
-    private val _isPinLocked = MutableStateFlow(true)
-    val isPinLocked: StateFlow<Boolean> = _isPinLocked.asStateFlow()
-
+    // --- Identity & Fleet Coordinator (Extracted Stage 12) ---
     private val identityFleet = IdentityFleetCoordinator(application, viewModelScope, ::addSystemLog)
     val activeOnionAddress: StateFlow<String> = identityFleet.activeOnionAddress
     val activeCanonicalOnionV3: StateFlow<String> = identityFleet.activeCanonicalOnionV3
@@ -108,6 +74,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val walletSpendLastSignature: StateFlow<RootKeyHub.WalletSpendSignature?> = identityFleet.walletSpendLastSignature
     val walletSpendSignatureVerified: StateFlow<Boolean?> = identityFleet.walletSpendSignatureVerified
     val fleetNodes: StateFlow<List<FleetNodeEntry>> = identityFleet.fleetNodes
+
+    // Deterministic Onion Address / App Identity Label & Cloud Sync Logs (declared before VaultCoordinator)
+    private val _simplexOnionAddress = MutableStateFlow("px_uninitialized_label.onion")
+    val simplexOnionAddress: StateFlow<String> = _simplexOnionAddress.asStateFlow()
+
+    private val _cloudSyncLogs = MutableStateFlow<List<String>>(
+        listOf(
+            "CLOUD_ENGINE: P2P Cryptocontainer engine loaded. Port 6881 configured.",
+            "CLOUD_ENGINE: AES-256-GCM block storage initialized on isolated sandbox storage",
+            "CLOUD_ENGINE: Seeding node ready for swarm synchronization"
+        )
+    )
+    val cloudSyncLogs: StateFlow<List<String>> = _cloudSyncLogs.asStateFlow()
+
+    // --- Vault, Master Key, PIN/Panic & Zero-Knowledge Backup Coordinator (Extracted Stage 13.2) ---
+    private val vaultCoordinator = VaultCoordinator(
+        env = AndroidVaultEnvironment(application),
+        scope = viewModelScope,
+        vaultDao = vaultDao,
+        sharedFileDao = sharedFileDao,
+        onSystemLog = ::addSystemLog,
+        onCloudSyncLog = ::addCloudSyncLog,
+        onOnionAddressUpdated = { _simplexOnionAddress.value = it },
+        getOnionAddress = { _simplexOnionAddress.value },
+        onRefreshIdentityAndFleet = {
+            identityFleet.refreshFromHub()?.also { pair ->
+                _simplexOnionAddress.value = pair.first
+            }
+        },
+        onClearIdentityOnLock = {
+            identityFleet.clearOnLockOrWipe()
+        },
+        onFullPanicCleanup = {
+            _simplexOnionAddress.value = "px_uninitialized_label.onion"
+            identityFleet.setUnitializedLabels()
+            identityFleet.clearOnLockOrWipe()
+            _simplexChatMessages.value = emptyList()
+            P2pBlockStorage.clear()
+            logDao.clearLogs()
+        }
+    )
+
+    val isUnlocked: StateFlow<Boolean> = vaultCoordinator.isUnlocked
+    val isPasswordSetup: StateFlow<Boolean> = vaultCoordinator.isPasswordSetup
+    val lastActivityTime: StateFlow<Long> = vaultCoordinator.lastActivityTime
+    val bip39Mnemonic: StateFlow<String> = vaultCoordinator.bip39Mnemonic
+    val isOnboarded: StateFlow<Boolean> = vaultCoordinator.isOnboarded
+    val isPinLocked: StateFlow<Boolean> = vaultCoordinator.isPinLocked
+    val rawVaultItems: StateFlow<List<VaultItem>> = vaultCoordinator.rawVaultItems
+    val sharedFiles: StateFlow<List<SharedFile>> = vaultCoordinator.sharedFiles
+    val decryptedVaultItems: StateFlow<List<VaultCoordinator.DecryptedVaultItem>> = vaultCoordinator.decryptedVaultItems
+    val vaultFileEncrypting: StateFlow<Boolean> = vaultCoordinator.vaultFileEncrypting
+    val vaultFileProgress: StateFlow<Float> = vaultCoordinator.vaultFileProgress
+    val vaultFileStatus: StateFlow<String> = vaultCoordinator.vaultFileStatus
+    val vaultFileLogs: StateFlow<List<String>> = vaultCoordinator.vaultFileLogs
+    val zkCloudBackupEnabled: StateFlow<Boolean> = vaultCoordinator.zkCloudBackupEnabled
+    val zkCloudBackupUrl: StateFlow<String> = vaultCoordinator.zkCloudBackupUrl
+    val zkCloudSyncFrequencyMinutes: StateFlow<Int> = vaultCoordinator.zkCloudSyncFrequencyMinutes
+    val zkCloudBackupStatus: StateFlow<String> = vaultCoordinator.zkCloudBackupStatus
+    val zkLastCloudSyncTimestamp: StateFlow<Long> = vaultCoordinator.zkLastCloudSyncTimestamp
 
     // --- Telemetry States directly linked to active seeder telemetry service ---
     val isCharging: StateFlow<Boolean> = TorrentSeederService.isCharging.asStateFlow()
@@ -195,102 +221,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _simplexLogs = MutableStateFlow<List<String>>(emptyList())
     val simplexLogs: StateFlow<List<String>> = _simplexLogs.asStateFlow()
 
-    // Deterministic Onion Address / App Identity Label & P2P Details
-    private val _simplexOnionAddress = MutableStateFlow("px_uninitialized_label.onion")
-    val simplexOnionAddress: StateFlow<String> = _simplexOnionAddress.asStateFlow()
-
     private val _tailscaleIp = MutableStateFlow("100.92.148.12")
     val tailscaleIp: StateFlow<String> = _tailscaleIp.asStateFlow()
 
     // --- Reactive Database Queries ---
-    // Read directly from Room
-    val rawVaultItems: StateFlow<List<VaultItem>> = vaultDao.getAllVaultItems().stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
-
     val simplexServers: StateFlow<List<SimplexServer>> = simplexDao.getAllServers().stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
     )
 
-    val sharedFiles: StateFlow<List<SharedFile>> = sharedFileDao.getAllSharedFiles().stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
-
     val activityLogs: StateFlow<List<ActivityLog>> = logDao.getAllActivityLogs().stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5000),
-        initialValue = emptyList()
-    )
-
-    // Decrypted View Data Models
-    data class DecryptedVaultItem(
-        val id: Int,
-        val type: String,
-        val title: String,
-        val username: String,
-        val decryptedValue: String,
-        val notes: String,
-        val createdAt: Long,
-        val isDecryptionError: Boolean = false
-    )
-
-    // Combine state flows to dynamically compute decrypted list
-    val decryptedVaultItems: StateFlow<List<DecryptedVaultItem>> = combine(
-        rawVaultItems,
-        _isUnlocked
-    ) { rawItems, unlocked ->
-        if (!unlocked || masterSecretKey == null) {
-            // Return placeholder lists
-            rawItems.map {
-                DecryptedVaultItem(
-                    id = it.id,
-                    type = it.type,
-                    title = "🔒 Encrypted Archive",
-                    username = "••••••••",
-                    decryptedValue = "••••••••••",
-                    notes = "••••••••••••••",
-                    createdAt = it.createdAt
-                )
-            }
-        } else {
-            val key = masterSecretKey!!
-            rawItems.map {
-                try {
-                    val decryptedTitle = CryptoUtils.decrypt(it.title, key)
-                    val decryptedUser = it.username?.let { u -> CryptoUtils.decrypt(u, key) } ?: ""
-                    val decryptedPass = CryptoUtils.decrypt(it.sensitiveValue, key)
-                    val decryptedNotes = it.notes?.let { n -> CryptoUtils.decrypt(n, key) } ?: ""
-                    DecryptedVaultItem(
-                        id = it.id,
-                        type = it.type,
-                        title = decryptedTitle,
-                        username = decryptedUser,
-                        decryptedValue = decryptedPass,
-                        notes = decryptedNotes,
-                        createdAt = it.createdAt
-                    )
-                } catch (e: Exception) {
-                    Log.e("MainViewModel", "Decryption error for item ${it.id}", e)
-                    DecryptedVaultItem(
-                        id = it.id,
-                        type = it.type,
-                        title = "⚠️ Decryption Error",
-                        username = "[CORRUPT]",
-                        decryptedValue = "[CORRUPT]",
-                        notes = "Master key mismatch or signature damaged.",
-                        createdAt = it.createdAt,
-                        isDecryptionError = true
-                    )
-                }
-            }
-        }
-    }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = emptyList()
@@ -337,10 +278,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
-        // Sovereign Root Key Onboarding check (Stage 8)
-        val onboarded = RootKeyHub.isOnboarded(application)
-        _isOnboarded.value = onboarded
-        _isPinLocked.value = onboarded && !RootKeyHub.isNodeUnlocked()
+        // Sovereign Root Key Identity refresh (Stage 8; VaultCoordinator initializes lock/setup state)
         identityFleet.setUnitializedLabels()
         if (RootKeyHub.isNodeUnlocked()) {
             refreshWalletAndFleetFromHub()
@@ -352,18 +290,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _radioAudioBeaconEnabled.value = uiPrefs.getBoolean("radio_audio_beacon", false)
         registerConnectivityObserver(application)
 
-        // Prepopulate preferences & basic default configs if needed
+        // Prepopulate default Simplex relay nodes if needed
         viewModelScope.launch {
-            // Check if user has initialized master pass via preferences or room mock.
-            // Using SharedPreferences is standard
-            val sp = application.getSharedPreferences("simplex_security", Application.MODE_PRIVATE)
-            val savedHash = sp.getString("pass_hash", null)
-            if (savedHash != null) {
-                _isPasswordSetup.value = true
-                cachedPassphraseHash = savedHash
-            } else {
-                _isPasswordSetup.value = false
-            }
 
             // Populate some initial Simplex relay nodes and default network parameters
             try {
@@ -410,316 +338,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-
-        // Background loop to monitor user inactivity and auto-lock the vault
-        viewModelScope.launch(Dispatchers.Default) {
-            while (true) {
-                delay(1000) // check every second
-                if (_isUnlocked.value) {
-                    val now = System.currentTimeMillis()
-                    val elapsed = now - _lastActivityTime.value
-                    if (elapsed >= 5 * 60 * 1000) { // 5 minutes
-                        lockVault()
-                        addSystemLog("VAULT", "Inactivity timeout reached (5 minutes). Vault auto-locked.", "SUCCESS")
-                    }
-                }
-            }
-        }
     }
 
-    // --- Authentication Actions ---
+    // --- Authentication, Onboarding, PIN/Panic & Vault Delegations (Stage 13.2 VaultCoordinator) ---
 
-    fun setupMasterPassword(password: String, customMnemonic: String? = null) {
-        viewModelScope.launch(Dispatchers.Default) {
-            val salt = CryptoUtils.generateSalt(32)
-            val saltB64 = Base64.encodeToString(salt, Base64.NO_WRAP)
-            val key = CryptoUtils.deriveKey(password, salt, CryptoUtils.DEFAULT_ITERATIONS)
-            masterSecretKey = key
-            
-            val mnemonic = if (customMnemonic != null && com.example.data.security.Bip39Utils.validateMnemonic(customMnemonic)) {
-                customMnemonic
-            } else {
-                com.example.data.security.Bip39Utils.generateMnemonic()
-            }
-            _bip39Mnemonic.value = mnemonic
-            
-            // Generate seed from mnemonic using standard PBKDF2-HMAC-SHA512
-            val seed = com.example.data.security.Bip39Utils.deriveSeed(mnemonic)
-            val hdVaultKey = com.example.data.security.Bip39Utils.deriveVaultKey(seed)
-            val hdOnionSeed = com.example.data.security.Bip39Utils.deriveTorOnionSeed(seed)
-            val hdDhtHash = com.example.data.security.Bip39Utils.deriveTorrentDhtInfoHash(seed)
+    fun setupMasterPassword(password: String, customMnemonic: String? = null) =
+        vaultCoordinator.setupMasterPassword(password, customMnemonic)
 
-            // Derive Onion Address deterministically from the Ed25519 onion seed
-            val randomSuf = hdOnionSeed.take(6).joinToString("") { String.format("%02x", it).take(1) }
-            _simplexOnionAddress.value = "sx67hg2tqp93${randomSuf}bca1sl8zqr.onion"
+    fun completeOnboarding(mnemonic: String, pin: String, panicPin: String) =
+        vaultCoordinator.completeOnboarding(mnemonic, pin, panicPin)
 
-            val sp = getApplication<Application>().getSharedPreferences("simplex_security", Application.MODE_PRIVATE)
-            val verificationText = "VERIFIED_KEY_DERIVATION"
-            val encryptedVerification = CryptoUtils.encrypt(verificationText, key)
-            val encryptedMnemonic = CryptoUtils.encrypt(mnemonic, key)
-            
-            sp.edit()
-                .putString("kdf_salt", saltB64)
-                .putInt("kdf_iterations", CryptoUtils.DEFAULT_ITERATIONS)
-                .putString("kdf_algorithm", CryptoUtils.PBKDF2_ALGORITHM)
-                .putString("pass_hash", encryptedVerification)
-                .putString("encrypted_mnemonic", encryptedMnemonic)
-                .apply()
+    fun verifyPinOrPanic(enteredPin: String): RootKeyHub.PinResult =
+        vaultCoordinator.verifyPinOrPanic(enteredPin)
 
-            cachedPassphraseHash = encryptedVerification
-            DbEncryptionManager.updateMasterPassphrase(getApplication<Application>(), password)
-            _isPasswordSetup.value = true
-            _isUnlocked.value = true
-            resetInactivityTimer()
-            
-            CryptoUtils.zeroize(salt)
-            CryptoUtils.zeroize(seed)
-            addSystemLog("VAULT", "Password setup and BIP-39 generation complete. PBKDF2-HMAC-SHA512 KDF engaged.", "SUCCESS")
-            addCloudSyncLog("CLOUD_ENGINE: Derived deterministic Tor onion address from BIP-39 seed: ${_simplexOnionAddress.value}")
-        }
-    }
+    fun lockNode() = vaultCoordinator.lockNode()
 
-    // [REAL] Stage 8: Sovereign Onboarding completion
-    fun completeOnboarding(mnemonic: String, pin: String, panicPin: String) {
-        viewModelScope.launch {
-            val app = getApplication<Application>()
-            val success = RootKeyHub.setupMasterKeys(app, mnemonic, pin, panicPin)
-            if (success) {
-                _isOnboarded.value = true
-                _isPinLocked.value = false
-                _isUnlocked.value = true
-                _bip39Mnemonic.value = mnemonic
-                refreshWalletAndFleetFromHub()
-                setupMasterPassword(pin, mnemonic)
-                addSystemLog("ONBOARDING", "Sovereign BIP-39 root keys initialized successfully. Identity: ${activeOnionAddress.value}", "SUCCESS")
-            }
-        }
-    }
+    fun unlockVault(password: String): Boolean = vaultCoordinator.unlockVault(password)
 
-    // [REAL] Stage 8: Sovereign PIN verification with Panic Wipe support
-    fun verifyPinOrPanic(enteredPin: String): RootKeyHub.PinResult {
-        val app = getApplication<Application>()
-        val result = RootKeyHub.verifyPin(app, enteredPin)
-        when (result) {
-            RootKeyHub.PinResult.SUCCESS -> {
-                _isPinLocked.value = false
-                _isUnlocked.value = true
-                refreshWalletAndFleetFromHub()
-                unlockVault(enteredPin)
-                addSystemLog("PIN", "Node unlocked successfully via sovereign PIN", "SUCCESS")
-            }
-            RootKeyHub.PinResult.PANIC_WIPED -> {
-                clearSensitiveSessionMemory()
-                _isOnboarded.value = false
-                _isPinLocked.value = true
-                _isUnlocked.value = false
-                _isPasswordSetup.value = false
-                _simplexOnionAddress.value = "px_uninitialized_label.onion"
-                identityFleet.setUnitializedLabels()
-                identityFleet.clearOnLockOrWipe()
-                _simplexChatMessages.value = emptyList()
-                P2pBlockStorage.clear()
-                ClipboardSecurityManager.wipeClipboardNow(app)
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        vaultDao.clearAllVault()
-                        sharedFileDao.getAllSharedFiles().first().forEach { f -> sharedFileDao.deleteSharedFile(f.id) }
-                        logDao.clearLogs()
-                    } catch (_: Exception) {}
-                }
-                addSystemLog("PANIC", "EMERGENCY PANIC WIPE EXECUTED. All node secrets purged.", "CRITICAL")
-            }
-            RootKeyHub.PinResult.INVALID -> {
-                addSystemLog("PIN", "Invalid PIN attempt detected", "FAILED")
-            }
-        }
-        return result
-    }
+    fun lockVault() = vaultCoordinator.lockVault()
 
-    // [REAL] Stage 8 + 13: Lock node, zeroize master secrets from memory, and wipe clipboard
-    fun lockNode() {
-        RootKeyHub.lockNode()
-        clearSensitiveSessionMemory()
-        DbEncryptionManager.clearMemory()
-        ClipboardSecurityManager.wipeClipboardNow(getApplication())
-        _isPinLocked.value = true
-        _isUnlocked.value = false
-        identityFleet.clearOnLockOrWipe()
-        addSystemLog("LOCK", "Node locked. Master keys and clipboard purged.", "PENDING")
-    }
+    fun resetInactivityTimer() = vaultCoordinator.resetInactivityTimer()
 
-    private fun clearSensitiveSessionMemory() {
-        masterSecretKey?.encoded?.let { CryptoUtils.zeroize(it) }
-        masterSecretKey = null
-        cachedPassphraseHash = ""
-        _bip39Mnemonic.value = ""
-    }
+    fun deleteRecoveryAllData() = vaultCoordinator.deleteRecoveryAllData()
 
-    fun unlockVault(password: String): Boolean {
-        return try {
-            val sp = getApplication<Application>().getSharedPreferences("simplex_security", Application.MODE_PRIVATE)
-            val saltB64 = sp.getString("kdf_salt", null)
-            val salt = if (saltB64 != null) Base64.decode(saltB64, Base64.NO_WRAP) else null
-            val iterations = sp.getInt("kdf_iterations", CryptoUtils.DEFAULT_ITERATIONS)
+    fun saveVaultItem(type: String, title: String, username: String, secret: String, notes: String) =
+        vaultCoordinator.saveVaultItem(type, title, username, secret, notes)
 
-            var derivedKey: SecretKey? = null
-            var isVerified = false
-
-            // 1. Try PBKDF2WithHmacSHA512 with saved random salt (Stage 1 standard)
-            if (salt != null) {
-                val key = CryptoUtils.deriveKey(password, salt, iterations)
-                try {
-                    val decrypted = CryptoUtils.decrypt(cachedPassphraseHash, key)
-                    if (decrypted == "VERIFIED_KEY_DERIVATION") {
-                        derivedKey = key
-                        isVerified = true
-                    }
-                } catch (ignored: Exception) {}
-            }
-
-            // 2. Legacy Migration Fallback: If verification failed, check legacy 1-round SHA-256 derivation
-            if (!isVerified) {
-                val legacyKey = CryptoUtils.deriveKeyLegacy(password)
-                try {
-                    val decryptedLegacy = CryptoUtils.decrypt(cachedPassphraseHash, legacyKey)
-                    if (decryptedLegacy == "VERIFIED_KEY_DERIVATION") {
-                        // Automatically migrate user credentials to fortified PBKDF2WithHmacSHA512
-                        val newSalt = CryptoUtils.generateSalt(32)
-                        val newKey = CryptoUtils.deriveKey(password, newSalt, CryptoUtils.DEFAULT_ITERATIONS)
-                        val newEncryptedVerification = CryptoUtils.encrypt("VERIFIED_KEY_DERIVATION", newKey)
-                        
-                        val oldEncryptedMnemonic = sp.getString("encrypted_mnemonic", null)
-                        val newEncryptedMnemonic = if (oldEncryptedMnemonic != null) {
-                            val decryptedMn = CryptoUtils.decrypt(oldEncryptedMnemonic, legacyKey)
-                            CryptoUtils.encrypt(decryptedMn, newKey)
-                        } else null
-
-                        sp.edit()
-                            .putString("kdf_salt", Base64.encodeToString(newSalt, Base64.NO_WRAP))
-                            .putInt("kdf_iterations", CryptoUtils.DEFAULT_ITERATIONS)
-                            .putString("kdf_algorithm", CryptoUtils.PBKDF2_ALGORITHM)
-                            .putString("pass_hash", newEncryptedVerification)
-                            .apply {
-                                if (newEncryptedMnemonic != null) putString("encrypted_mnemonic", newEncryptedMnemonic)
-                            }
-                            .apply()
-
-                        cachedPassphraseHash = newEncryptedVerification
-                        derivedKey = newKey
-                        isVerified = true
-                        CryptoUtils.zeroize(newSalt)
-                        addSystemLog("VAULT", "MIGRATION: Master key derivation upgraded from SHA-256 to PBKDF2-HMAC-SHA512 (150,000 rounds).", "SUCCESS")
-                    }
-                } catch (ignored: Exception) {}
-            }
-
-            if (isVerified && derivedKey != null) {
-                masterSecretKey = derivedKey
-                DbEncryptionManager.updateMasterPassphrase(getApplication<Application>(), password)
-                
-                // Load and decrypt BIP-39 mnemonic
-                val encryptedMnemonic = sp.getString("encrypted_mnemonic", null)
-                if (encryptedMnemonic != null) {
-                    try {
-                        val decryptedMnemonic = CryptoUtils.decrypt(encryptedMnemonic, derivedKey)
-                        _bip39Mnemonic.value = decryptedMnemonic
-                        
-                        // Re-derive the deterministic onion address
-                        val seed = com.example.data.security.Bip39Utils.deriveSeed(decryptedMnemonic)
-                        val hdOnionSeed = com.example.data.security.Bip39Utils.deriveTorOnionSeed(seed)
-                        val randomSuf = hdOnionSeed.take(6).joinToString("") { String.format("%02x", it).take(1) }
-                        _simplexOnionAddress.value = "sx67hg2tqp93${randomSuf}bca1sl8zqr.onion"
-                        CryptoUtils.zeroize(seed)
-                    } catch (e: Exception) {
-                        Log.e("MainViewModel", "Failed to decrypt mnemonic during unlock", e)
-                    }
-                }
-
-                _isUnlocked.value = true
-                resetInactivityTimer()
-                addSystemLog("VAULT", "Authenticated successfully. Zero-knowledge enclave unlocked.", "SUCCESS")
-                true
-            } else {
-                addSystemLog("VAULT", "Authentication rejection: cryptographic hash mismatch.", "FAILED")
-                false
-            }
-        } catch (e: Exception) {
-            addSystemLog("VAULT", "Authentication failure. Decryption integrity exception.", "FAILED")
-            false
-        }
-    }
-
-    fun lockVault() {
-        clearSensitiveSessionMemory()
-        _isUnlocked.value = false
-        DbEncryptionManager.clearMemory()
-        ClipboardSecurityManager.wipeClipboardNow(getApplication())
-        resetInactivityTimer()
-        addSystemLog("VAULT", "Vault locked. Memory keys and clipboard zeroized.", "SUCCESS")
-    }
-
-    fun resetInactivityTimer() {
-        _lastActivityTime.value = System.currentTimeMillis()
-    }
-
-    fun deleteRecoveryAllData() {
-        val app = getApplication<Application>()
-        clearSensitiveSessionMemory()
-        _isUnlocked.value = false
-        _isPasswordSetup.value = false
-        _isOnboarded.value = false
-        _isPinLocked.value = true
-        _simplexOnionAddress.value = "px_uninitialized_label.onion"
-        identityFleet.setUnitializedLabels()
-        identityFleet.clearOnLockOrWipe()
-        _simplexChatMessages.value = emptyList()
-        RootKeyHub.triggerPanicWipe(app)
-        P2pBlockStorage.clear()
-
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                vaultDao.clearAllVault()
-                val files = sharedFileDao.getAllSharedFiles().first()
-                files.forEach { f -> sharedFileDao.deleteSharedFile(f.id) }
-                logDao.clearLogs()
-            } catch (e: Exception) {
-                Log.e("MainViewModel", "Purge operation failed", e)
-            }
-        }
-    }
-
-    // --- Vault Management ---
-
-    fun saveVaultItem(type: String, title: String, username: String, secret: String, notes: String) {
-        val key = masterSecretKey ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val encryptedTitle = CryptoUtils.encrypt(title, key)
-                val encryptedUser = CryptoUtils.encrypt(username, key)
-                val encryptedSecret = CryptoUtils.encrypt(secret, key)
-                val encryptedNotes = CryptoUtils.encrypt(notes, key)
-
-                val item = VaultItem(
-                    type = type,
-                    title = encryptedTitle,
-                    username = encryptedUser,
-                    sensitiveValue = encryptedSecret,
-                    notes = encryptedNotes
-                )
-                vaultDao.insertVaultItem(item)
-                addSystemLog("VAULT", "Added encrypted $type payload. Key ID size updated.", "SUCCESS")
-            } catch (e: Exception) {
-                addSystemLog("VAULT", "Failed to encrypt/save credential block.", "FAILED")
-            }
-        }
-    }
-
-    fun deleteVaultItem(id: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
-            vaultDao.deleteVaultItem(id)
-            addSystemLog("VAULT", "Entry deleted. Shredding sector records.", "SUCCESS")
-        }
-    }
+    fun deleteVaultItem(id: Int) = vaultCoordinator.deleteVaultItem(id)
 
 
     // --- VPN Tor and Tailscale Controller & Logging Simulations ---
@@ -863,167 +508,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _simplexLogs.value = current.takeLast(40)
     }
 
-    // --- End-to-End Encrypted File Shared Panel (AES-GCM-256) ---
+    // --- End-to-End Encrypted File Sharing & Zero-Knowledge Backup Delegations ---
 
-    fun encryptAndShareFile(name: String, rawContent: String, recipient: String) {
-        val key = masterSecretKey
-        if (key == null) {
-            addSystemLog("FILE_UPLOAD", "Cannot encrypt file. Vault is locked.", "FAILED")
-            return
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                // Generate a payload-specific AES key
-                val filePayload = CryptoUtils.encryptFileSimulation(name, rawContent, key)
-                val bytesCount = rawContent.toByteArray().size
-                val sizeLabel = "${bytesCount} bytes"
-                
-                // Generate share link identifier using SecureRandom
-                val onionHost = _simplexOnionAddress.value
-                val linkId = java.security.SecureRandom().nextInt(900000) + 100000
-                val sharedLink = "http://$onionHost/share/v1-id=$linkId?hash=${Base64.encodeToString(name.toByteArray(), Base64.NO_WRAP).take(12)}"
-                
-                val shared = SharedFile(
-                    fileName = name,
-                    sizeLabel = sizeLabel,
-                    encryptedPayload = filePayload,
-                    senderAlias = "My Secure Device",
-                    recipientAlias = recipient,
-                    accessUrl = sharedLink
-                )
-                sharedFileDao.insertSharedFile(shared)
-                addSystemLog("FILE_UPLOAD", "Encrypted '$name' with local GCM cipher blocks. Manifest published.", "SUCCESS")
-            } catch (e: Exception) {
-                addSystemLog("FILE_UPLOAD", "Encryption failure: ${e.localizedMessage}", "FAILED")
-            }
-        }
-    }
+    fun encryptAndShareFile(name: String, rawContent: String, recipient: String) =
+        vaultCoordinator.encryptAndShareFile(name, rawContent, recipient)
 
-    fun deleteSharedFile(id: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
-            sharedFileDao.deleteSharedFile(id)
-            addSystemLog("FILE_DOWNLOAD", "Revoked online file block. Shredding disk content.", "SUCCESS")
-        }
-    }
+    fun deleteSharedFile(id: Int) = vaultCoordinator.deleteSharedFile(id)
 
-    fun toggleFilePin(id: Int, isPinned: Boolean) {
-        viewModelScope.launch(Dispatchers.IO) {
-            sharedFileDao.updatePinStatus(id, isPinned)
-            addSystemLog("FILE_PIN", "File pin status updated to $isPinned", "SUCCESS")
-        }
-    }
+    fun toggleFilePin(id: Int, isPinned: Boolean) = vaultCoordinator.toggleFilePin(id, isPinned)
 
-    // --- Zero-Knowledge Cloud Backup Integrator ---
+    fun generateZeroKnowledgeBackupPayload(passphrase: String): String? =
+        vaultCoordinator.generateZeroKnowledgeBackupPayload(passphrase)
 
-    fun generateZeroKnowledgeBackupPayload(passphrase: String): String? {
-        val key = masterSecretKey ?: return null
-        // Compile all items in the database into a secure JSON packet
-        // and encrypt it using a passphrase-derived AES-GCM-256 key
-        try {
-            val databaseArray = JSONArray()
-            val items = rawVaultItems.value
-            for (item in items) {
-                val obj = JSONObject()
-                obj.put("type", item.type)
-                obj.put("title", item.title)
-                obj.put("username", item.username ?: "")
-                obj.put("value", item.sensitiveValue)
-                obj.put("notes", item.notes ?: "")
-                obj.put("createdAt", item.createdAt)
-                databaseArray.put(obj)
-            }
-            
-            val payload = JSONObject()
-            payload.put("version", 2)
-            payload.put("client", "SimplexPrivacy")
-            payload.put("vaultData", databaseArray)
-            
-            val contentString = payload.toString()
-            
-            // Derive a fortified key specifically for backup from passphrase (PBKDF2-HMAC-SHA512 + salt)
-            val backupSalt = CryptoUtils.generateSalt(32)
-            val backupKey = CryptoUtils.deriveKey(passphrase, backupSalt, CryptoUtils.DEFAULT_ITERATIONS)
-            val encryptedBackup = CryptoUtils.encrypt(contentString, backupKey)
-            
-            val envelope = JSONObject().apply {
-                put("salt", Base64.encodeToString(backupSalt, Base64.NO_WRAP))
-                put("iterations", CryptoUtils.DEFAULT_ITERATIONS)
-                put("kdf", CryptoUtils.PBKDF2_ALGORITHM)
-                put("payload", encryptedBackup)
-            }
-            CryptoUtils.zeroize(backupSalt)
-            
-            addSystemLog("BACKUP", "Created Zero-Knowledge cloud archive with PBKDF2-HMAC-SHA512 protection.", "SUCCESS")
-            return envelope.toString()
-        } catch (e: Exception) {
-            addSystemLog("BACKUP", "Backup compilation error: ${e.localizedMessage}", "FAILED")
-            return null
-        }
-    }
-
-    fun restoreZeroKnowledgeBackup(backupPayload: String, passphrase: String): Boolean {
-        return try {
-            val envelope = try { JSONObject(backupPayload) } catch (e: Exception) { null }
-            val (encryptedData, backupKey) = if (envelope != null && envelope.has("salt") && envelope.has("payload")) {
-                val salt = Base64.decode(envelope.getString("salt"), Base64.NO_WRAP)
-                val iters = envelope.optInt("iterations", CryptoUtils.DEFAULT_ITERATIONS)
-                val key = CryptoUtils.deriveKey(passphrase, salt, iters)
-                CryptoUtils.zeroize(salt)
-                Pair(envelope.getString("payload"), key)
-            } else {
-                // Legacy unversioned backup fallback
-                Pair(backupPayload, CryptoUtils.deriveKey(passphrase))
-            }
-
-            val decryptedJson = CryptoUtils.decrypt(encryptedData, backupKey)
-            val payload = JSONObject(decryptedJson)
-            val array = payload.getJSONArray("vaultData")
-            
-            viewModelScope.launch(Dispatchers.IO) {
-                // Wipe current database
-                vaultDao.clearAllVault()
-                for (i in 0 until array.length()) {
-                    val obj = array.getJSONObject(i)
-                    val item = VaultItem(
-                        type = obj.getString("type"),
-                        title = obj.getString("title"),
-                        username = obj.getString("username"),
-                        sensitiveValue = obj.getString("value"),
-                        notes = obj.getString("notes"),
-                        createdAt = obj.getLong("createdAt")
-                    )
-                    vaultDao.insertVaultItem(item)
-                }
-                
-                // Set up credentials with fortified PBKDF2-HMAC-SHA512
-                val newSalt = CryptoUtils.generateSalt(32)
-                val newMasterKey = CryptoUtils.deriveKey(passphrase, newSalt, CryptoUtils.DEFAULT_ITERATIONS)
-                masterSecretKey = newMasterKey
-                
-                val sp = getApplication<Application>().getSharedPreferences("simplex_security", Application.MODE_PRIVATE)
-                val verificationText = "VERIFIED_KEY_DERIVATION"
-                val encryptedVerification = CryptoUtils.encrypt(verificationText, newMasterKey)
-                sp.edit()
-                    .putString("kdf_salt", Base64.encodeToString(newSalt, Base64.NO_WRAP))
-                    .putInt("kdf_iterations", CryptoUtils.DEFAULT_ITERATIONS)
-                    .putString("kdf_algorithm", CryptoUtils.PBKDF2_ALGORITHM)
-                    .putString("pass_hash", encryptedVerification)
-                    .apply()
-                
-                DbEncryptionManager.updateMasterPassphrase(getApplication<Application>(), passphrase)
-                CryptoUtils.zeroize(newSalt)
-
-                _isUnlocked.value = true
-                _isPasswordSetup.value = true
-                
-                addSystemLog("BACKUP", "Restored vault snapshot. References decrypted and migrated to fortified KDF.", "SUCCESS")
-            }
-            true
-        } catch (e: Exception) {
-            addSystemLog("BACKUP", "Backup restoration signature invalid or incorrect passphrase.", "FAILED")
-            false
-        }
-    }
+    fun restoreZeroKnowledgeBackup(backupPayload: String, passphrase: String): Boolean =
+        vaultCoordinator.restoreZeroKnowledgeBackup(backupPayload, passphrase)
 
     // --- Helpers ---
 
@@ -1477,101 +975,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- File Vault Ingestion & Cryptographic Pipeline State ---
-    private val _vaultFileEncrypting = MutableStateFlow(false)
-    val vaultFileEncrypting: StateFlow<Boolean> = _vaultFileEncrypting.asStateFlow()
+    // --- File Vault Ingestion Delegation (Stage 13.2 VaultCoordinator) ---
 
-    private val _vaultFileProgress = MutableStateFlow(0f)
-    val vaultFileProgress: StateFlow<Float> = _vaultFileProgress.asStateFlow()
-
-    private val _vaultFileStatus = MutableStateFlow("")
-    val vaultFileStatus: StateFlow<String> = _vaultFileStatus.asStateFlow()
-
-    private val _vaultFileLogs = MutableStateFlow<List<String>>(emptyList())
-    val vaultFileLogs: StateFlow<List<String>> = _vaultFileLogs.asStateFlow()
-
-    fun encryptAndSaveVaultFile(fileName: String, fileBytes: ByteArray, fileMimeType: String) {
-        val key = masterSecretKey
-        if (key == null) {
-            addSystemLog("VAULT", "Encryption aborted. Cryptographic vault is locked.", "FAILED")
-            return
-        }
-        if (_vaultFileEncrypting.value) return
-        _vaultFileEncrypting.value = true
-        _vaultFileProgress.value = 0.0f
-        _vaultFileLogs.value = emptyList()
-
-        viewModelScope.launch(Dispatchers.IO) {
-            fun logStep(text: String) {
-                val formatted = "[PIPELINE] $text"
-                _vaultFileLogs.value = _vaultFileLogs.value + formatted
-                _vaultFileStatus.value = text
-            }
-
-            try {
-                logStep("Ingesting file payload '$fileName' (${fileBytes.size} bytes) with MIME: $fileMimeType")
-                delay(400)
-                
-                _vaultFileProgress.value = 0.15f
-                logStep("Stage 1: Allocating isolated RAM sector for cleartext buffer. Verification hash matching...")
-                delay(500)
-
-                _vaultFileProgress.value = 0.35f
-                logStep("Stage 2: Invoking MetadataStripper. Parsing headers and stripping geo-location, EXIF, and camera markers...")
-                val sanitizedBytes = com.example.data.security.MetadataStripper.stripMetadata(
-                    java.io.ByteArrayInputStream(fileBytes),
-                    fileMimeType
-                )
-                val byteDifference = fileBytes.size - sanitizedBytes.size
-                if (byteDifference > 0) {
-                    logStep("Stripping complete. Excised $byteDifference bytes of potentially unsafe binary metadata metadata chunks!")
-                } else {
-                    logStep("Stripping complete. File structure verified, no residual meta-headers found.")
-                }
-                delay(500)
-
-                _vaultFileProgress.value = 0.55f
-                logStep("Stage 3: Confirming database master keys. Key stretching completed via DbEncryptionManager (PBKDF2 HmacSHA256)...")
-                delay(500)
-
-                _vaultFileProgress.value = 0.75f
-                logStep("Stage 4: Preparing AES-256-GCM cipher context. Generating secure random 96-bit Initialization Vector...")
-                delay(500)
-
-                _vaultFileProgress.value = 0.90f
-                logStep("Stage 5: Encrypting payload with AES/GCM/NoPadding. Authenticating cipher tag (128-bit integrity validation)...")
-                val contentString = Base64.encodeToString(sanitizedBytes, Base64.NO_WRAP)
-                val encryptedBlock = CryptoUtils.encryptFileSimulation(fileName, contentString, key)
-                delay(500)
-
-                _vaultFileProgress.value = 1.0f
-                logStep("Stage 6: Encrypted SQLite insert successful. Clearing temporary RAM states.")
-                
-                val sizeLabel = when {
-                    sanitizedBytes.size < 1024 -> "${sanitizedBytes.size} B"
-                    sanitizedBytes.size < 1024 * 1024 -> String.format("%.1f KB", sanitizedBytes.size / 1024f)
-                    else -> String.format("%.1f MB", sanitizedBytes.size / (1024f * 1024f))
-                }
-
-                val item = VaultItem(
-                    type = "FILE",
-                    title = fileName,
-                    username = sizeLabel,
-                    sensitiveValue = encryptedBlock,
-                    notes = "End-to-end encrypted local file (EXIF Stripped)"
-                )
-                vaultDao.insertVaultItem(item)
-                addSystemLog("VAULT_INGEST", "E2EE file storage verified. File: $fileName", "SUCCESS")
-                delay(600)
-            } catch (e: Exception) {
-                logStep("CRITICAL EXCEPTION during cryptographic pipeline: ${e.localizedMessage}")
-                addSystemLog("VAULT_INGEST", "E2EE file ingestion failed: ${e.localizedMessage}", "FAILED")
-                delay(1000)
-            } finally {
-                _vaultFileEncrypting.value = false
-            }
-        }
-    }
+    fun encryptAndSaveVaultFile(fileName: String, fileBytes: ByteArray, fileMimeType: String) =
+        vaultCoordinator.encryptAndSaveVaultFile(fileName, fileBytes, fileMimeType)
 
     fun setRelayMode(mode: String) {
         _relayMode.value = mode
@@ -1616,22 +1023,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _wifiOnlySync = MutableStateFlow(true)
     val wifiOnlySync: StateFlow<Boolean> = _wifiOnlySync.asStateFlow()
 
-    // --- Zero-Knowledge Cloud Backup State ---
-    private val _zkCloudBackupEnabled = MutableStateFlow(false)
-    val zkCloudBackupEnabled: StateFlow<Boolean> = _zkCloudBackupEnabled.asStateFlow()
-
-    private val _zkCloudBackupUrl = MutableStateFlow("https://cloud-sync.simplex.privacy")
-    val zkCloudBackupUrl: StateFlow<String> = _zkCloudBackupUrl.asStateFlow()
-
-    private val _zkCloudSyncFrequencyMinutes = MutableStateFlow(5)
-    val zkCloudSyncFrequencyMinutes: StateFlow<Int> = _zkCloudSyncFrequencyMinutes.asStateFlow()
-
-    private val _zkCloudBackupStatus = MutableStateFlow("Isolated")
-    val zkCloudBackupStatus: StateFlow<String> = _zkCloudBackupStatus.asStateFlow()
-
-    private val _zkLastCloudSyncTimestamp = MutableStateFlow(0L)
-    val zkLastCloudSyncTimestamp: StateFlow<Long> = _zkLastCloudSyncTimestamp.asStateFlow()
-
     private val _torrentSeedingEnabled = MutableStateFlow(true)
     val torrentSeedingEnabled: StateFlow<Boolean> = _torrentSeedingEnabled.asStateFlow()
 
@@ -1648,15 +1039,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val torrentPieces: StateFlow<List<Boolean>> = _torrentPieces.asStateFlow()
 
     val p2pCloudLogs: StateFlow<List<String>> = P2pCloudEngine.cloudLogs
-
-    private val _cloudSyncLogs = MutableStateFlow<List<String>>(
-        listOf(
-            "CLOUD_ENGINE: P2P Cryptocontainer engine loaded. Port 6881 configured.",
-            "CLOUD_ENGINE: AES-256-GCM block storage initialized on isolated sandbox storage",
-            "CLOUD_ENGINE: Seeding node ready for swarm synchronization"
-        )
-    )
-    val cloudSyncLogs: StateFlow<List<String>> = _cloudSyncLogs.asStateFlow()
 
     fun setCryptoContainerSize(sizeGb: Int) {
         _cryptoContainerSizeGb.value = sizeGb
@@ -1712,60 +1094,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         addSystemLog("CLOUD_CONFIG", "Seeding status toggled to $enabled", "SUCCESS")
     }
 
-    // --- Zero-Knowledge Cloud Backup Actions ---
+    // --- Zero-Knowledge Cloud Backup Delegations (Stage 13.2 VaultCoordinator) ---
 
-    fun toggleZkCloudBackup(enabled: Boolean) {
-        _zkCloudBackupEnabled.value = enabled
-        if (enabled) {
-            _zkCloudBackupStatus.value = "Synchronized"
-            addSystemLog("CLOUD_BACKUP", "Zero-Knowledge cloud backup synchronization enabled.", "SUCCESS")
-            addCloudSyncLog("CLOUD_BACKUP: Zero-knowledge sync state: ENABLED. Target Node: ${_zkCloudBackupUrl.value}")
-            triggerManualZkCloudSync()
-        } else {
-            _zkCloudBackupStatus.value = "Isolated"
-            addSystemLog("CLOUD_BACKUP", "Zero-Knowledge cloud backup synchronization disabled.", "SUCCESS")
-            addCloudSyncLog("CLOUD_BACKUP: Zero-knowledge sync state: DISABLED (Local Isolation Mode).")
-        }
-    }
+    fun toggleZkCloudBackup(enabled: Boolean) = vaultCoordinator.toggleZkCloudBackup(enabled)
 
-    fun setZkCloudBackupUrl(url: String) {
-        _zkCloudBackupUrl.value = url
-        addSystemLog("CLOUD_BACKUP", "Target remote backup proxy set to $url", "SUCCESS")
-        addCloudSyncLog("CLOUD_BACKUP: Target node re-routed to: $url")
-    }
+    fun setZkCloudBackupUrl(url: String) = vaultCoordinator.setZkCloudBackupUrl(url)
 
-    fun setZkCloudSyncFrequency(minutes: Int) {
-        _zkCloudSyncFrequencyMinutes.value = minutes
-        addSystemLog("CLOUD_BACKUP", "Sync check interval updated to $minutes minutes.", "SUCCESS")
-        addCloudSyncLog("CLOUD_BACKUP: Sync check interval set to $minutes minutes.")
-    }
+    fun setZkCloudSyncFrequency(minutes: Int) = vaultCoordinator.setZkCloudSyncFrequency(minutes)
 
-    fun triggerManualZkCloudSync() {
-        viewModelScope.launch(Dispatchers.Default) {
-            val key = masterSecretKey
-            if (key == null) {
-                _zkCloudBackupStatus.value = "Locked"
-                addCloudSyncLog("CLOUD_BACKUP: Sync postponed. Master database is currently sealed.")
-                return@launch
-            }
-            
-            _zkCloudBackupStatus.value = "Syncing..."
-            addCloudSyncLog("CLOUD_BACKUP: Compiling vault entries and preparing secure AES payload...")
-            delay(1500) // Simulate transmission delay and cryptographic processing
-            
-            val payload = generateZeroKnowledgeBackupPayload("sync-simulation-key")
-            if (payload != null) {
-                _zkLastCloudSyncTimestamp.value = System.currentTimeMillis()
-                _zkCloudBackupStatus.value = "Synchronized"
-                addSystemLog("CLOUD_BACKUP", "Automatic Zero-Knowledge remote synchronization succeeded.", "SUCCESS")
-                addCloudSyncLog("CLOUD_BACKUP: Handshake verified with proxy node. Encrypted SQLite snapshot uploaded successfully.")
-            } else {
-                _zkCloudBackupStatus.value = "Error: Encryption failed"
-                addSystemLog("CLOUD_BACKUP", "Remote synchronization failed.", "FAILED")
-                addCloudSyncLog("CLOUD_BACKUP: Synchronization aborted due to compilation error.")
-            }
-        }
-    }
+    fun triggerManualZkCloudSync() = vaultCoordinator.triggerManualZkCloudSync()
 
     // ==========================================
     // --- NODE CONTROLLER & DIAGNOSTICS COORDINATOR (EXTRACTED STAGE 12) ---
@@ -1781,8 +1118,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             NodeDiagnosticsCoordinator.TelemetrySnapshot(
                 torStatus = _torStatus.value,
                 tailscaleStatus = _tailscaleStatus.value,
-                zkCloudBackupEnabled = _zkCloudBackupEnabled.value,
-                zkCloudBackupStatus = _zkCloudBackupStatus.value,
+                zkCloudBackupEnabled = zkCloudBackupEnabled.value,
+                zkCloudBackupStatus = zkCloudBackupStatus.value,
                 walletProofAddress = walletEvmAddress.value,
                 walletSpendAddress = walletSpendAddress.value,
                 clientEphemeralKeyPrefix = _clientEphemeralPublicKey.value.take(12),
